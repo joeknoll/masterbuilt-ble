@@ -35,6 +35,7 @@ class MasterbuiltCoordinator:
         self._connect_task: asyncio.Task[None] | None = None
         self._next_attempt = 0.0
         self._stopping = False
+        self._warned_connect_failure = False
 
     @callback
     def async_start(self) -> None:
@@ -86,9 +87,22 @@ class MasterbuiltCoordinator:
     async def _async_connect(self) -> None:
         try:
             await self.grill.connect()
-        except (BleakError, TimeoutError) as err:
+        except Exception as err:
             self._next_attempt = time.monotonic() + RECONNECT_BACKOFF_SECONDS
-            _LOGGER.debug("%s: connection failed: %s", self.grill.address, err)
+            # Warn once per failure streak; repeat attempts go to debug so a
+            # grill that is simply off doesn't flood the log.
+            log = _LOGGER.debug if self._warned_connect_failure else _LOGGER.warning
+            log(
+                "%s: connection failed, retrying in %ss: %r",
+                self.grill.address,
+                RECONNECT_BACKOFF_SECONDS,
+                err,
+                # Full traceback only for unexpected errors (likely our bug).
+                exc_info=not isinstance(err.__cause__ or err, (BleakError, TimeoutError)),
+            )
+            self._warned_connect_failure = True
+        else:
+            self._warned_connect_failure = False
 
     async def _async_watchdog(self, _now: datetime) -> None:
         grill = self.grill

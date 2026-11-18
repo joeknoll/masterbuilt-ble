@@ -90,12 +90,25 @@ class MasterbuiltGrill:
                 ble_device_callback=lambda: self._ble_device,
                 max_attempts=3,
             )
+            step = "sending init payload"
             try:
+                _LOGGER.debug("%s: connected, %s", self.address, step)
                 await self._write(client, START_CHAR_UUID, INIT_PAYLOAD)
+                step = "subscribing to notifications"
+                _LOGGER.debug("%s: %s", self.address, step)
                 await client.start_notify(NOTIFY_CHAR_UUID, self._handle_notification)
-            except (BleakError, TimeoutError):
-                await client.disconnect()
-                raise
+            except Exception as err:
+                _LOGGER.debug(
+                    "%s: failed while %s; services seen: %s",
+                    self.address,
+                    step,
+                    self._describe_services(client),
+                )
+                try:
+                    await client.disconnect()
+                except BleakError:
+                    pass
+                raise BleakError(f"failed while {step}: {err!r}") from err
 
             self._client = client
             self._assembler = PacketAssembler()
@@ -158,6 +171,18 @@ class MasterbuiltGrill:
             payload.hex(" ").upper(),
         )
         await self._write(self._client, CONTROL_CHAR_UUID, payload)
+
+    @staticmethod
+    def _describe_services(client: BleakClient) -> str:
+        """List characteristics and their properties, for debugging."""
+        try:
+            return ", ".join(
+                f"{char.uuid}[{'/'.join(char.properties)}]"
+                for service in client.services
+                for char in service.characteristics
+            )
+        except Exception as err:  # noqa: BLE001 - best effort, debug only
+            return f"unavailable ({err!r})"
 
     async def _write(self, client: BleakClient, uuid: str, data: bytes) -> None:
         char = client.services.get_characteristic(uuid)
