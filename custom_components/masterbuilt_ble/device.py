@@ -13,13 +13,22 @@ from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
-from .const import CONTROL_CHAR_UUID, INIT_PAYLOAD, NOTIFY_CHAR_UUID, START_CHAR_UUID
+from .const import (
+    AUTH_CHAR_UUID,
+    CONTROL_CHAR_UUID,
+    INIT_PAYLOAD,
+    NOTIFY_CHAR_UUID,
+    START_CHAR_UUID,
+)
 from .protocol import (
     GrillStatus,
     PacketAssembler,
     PowerOff,
     ProbeStatus,
+    build_handshake,
     build_set_temp_and_time,
+    is_handshake_accepted,
+    parse_handshake_challenge,
     parse_packet,
 )
 
@@ -45,6 +54,7 @@ class MasterbuiltGrill:
         self._ble_device: BLEDevice | None = None
         self._client: BleakClient | None = None
         self._connect_lock = asyncio.Lock()
+        self._handshake_done = False
         self._assembler = PacketAssembler()
         self._listeners: list[Callable[[], None]] = []
 
@@ -115,6 +125,7 @@ class MasterbuiltGrill:
                 raise BleakError(f"failed while {step}: {err!r}") from err
 
             self._client = client
+            self._handshake_done = False
             self._assembler = PacketAssembler()
             self.last_packet_monotonic = time.monotonic()
             _LOGGER.info("%s: connected", self.address)
@@ -167,6 +178,8 @@ class MasterbuiltGrill:
         if not self.connected:
             await self.connect()
         assert self._client is not None
+        if not self._handshake_done:
+            await self._complete_handshake(self._client)
         _LOGGER.debug(
             "%s: sending set temp=%s minutes=%s (%s)",
             self.address,
@@ -240,6 +253,41 @@ class MasterbuiltGrill:
             )
         except Exception as err:  # noqa: BLE001 - best effort, debug only
             return f"unavailable ({err!r})"
+
+    async def _complete_handshake(self, client: BleakClient) -> None:
+        """Finish the handshake the official app does, before sending commands.
+
+        connect() only writes the hello (INIT_PAYLOAD), which is enough for
+        the status stream. The app then reads a challenge from fff2, writes
+        it back to fff1, and reads 0B 00 00. Whether commands need this is
+        not known yet, so failures are logged and the command is sent anyway.
+        Done once per connection, only when a command is sent, so a plain
+        read-only connection stays exactly as before.
+        """
+        try:
+            reply = bytes(await client.read_gatt_char(AUTH_CHAR_UUID))
+            _LOGGER.debug("%s: handshake reply %s", self.address, reply.hex(" ").upper())
+            challenge = parse_handshake_challenge(reply)
+            if challenge is None:
+                _LOGGER.warning(
+                    "%s: unexpected handshake reply %s; sending command anyway",
+                    self.address,
+                    reply.hex(" ").upper(),
+                )
+                return
+            await self._write(client, START_CHAR_UUID, build_handshake(challenge))
+            result = bytes(await client.read_gatt_char(AUTH_CHAR_UUID))
+            _LOGGER.debug("%s: handshake result %s", self.address, result.hex(" ").upper())
+            if is_handshake_accepted(result):
+                self._handshake_done = True
+            else:
+                _LOGGER.warning(
+                    "%s: handshake not accepted (%s); sending command anyway",
+                    self.address,
+                    result.hex(" ").upper(),
+                )
+        except (BleakError, TimeoutError) as err:
+            _LOGGER.warning("%s: handshake failed (%r); sending command anyway", self.address, err)
 
     async def _write(self, client: BleakClient, uuid: str, data: bytes) -> None:
         char = client.services.get_characteristic(uuid)

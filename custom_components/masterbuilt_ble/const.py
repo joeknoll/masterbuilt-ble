@@ -13,6 +13,8 @@ MANUFACTURER: Final = "Masterbuilt"
 SERVICE_UUID: Final = "426f7567-6854-6563-2d57-65694c69fff0"
 # Written once right after connecting; the grill drops the link otherwise.
 START_CHAR_UUID: Final = "426f7567-6854-6563-2d57-65694c69fff1"
+# Handshake replies (challenge, then "accepted"), read after writing START_CHAR.
+AUTH_CHAR_UUID: Final = "426f7567-6854-6563-2d57-65694c69fff2"
 # Commands (set temperature / timer).
 CONTROL_CHAR_UUID: Final = "426f7567-6854-6563-2d57-65694c69fff3"
 # Status / probe notifications.

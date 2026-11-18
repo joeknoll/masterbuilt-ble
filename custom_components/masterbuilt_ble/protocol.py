@@ -29,14 +29,73 @@ No readings are broadcast; a connection is needed for data. [known]
 Connection (GATT, service 426f7567-6854-6563-2d57-65694c69fff0)
 ---------------------------------------------------------------
 
-    ...fff1  write    INIT_PAYLOAD once after connecting, or the grill drops
-                      the link. [known] Meaning of the payload bytes: [unknown]
-    ...fff3  write    control commands (see below). [unconfirmed]
-    ...fff4  notify   status, probe and power-off packets. [known]
-                      Has no CCCD descriptor; the grill notifies without
-                      one once INIT_PAYLOAD is written. [assumed]
+Handles are from one capture of the official Android app; each
+characteristic has one custom 0xFF0n descriptor and none has a CCCD
+(0x2902). [known]
 
+    ...fff1  0x002a  read/write  handshake and session messages (below).
+                     Writing a handshake hello once after connecting starts
+                     the status stream; without it the grill drops the
+                     link. [known]
+    ...fff2  0x002d  read        handshake replies (below). [known]
+    ...fff3  0x0030  read/write  commands (below).
+    ...fff4  0x0033  notify      status, probe and power-off packets. No
+                     CCCD: the grill notifies without one. [known]
+    ...fff5  0x0036  read/write/notify  Wi-Fi setup data: the scanned
+                     network list (notify) and the chosen network's
+                     credentials (write). [known]
+
+Device Information service (0x180A), as read by the app:
+
+    0x2A24 model number       "C:G:900:1:D"
+    0x2A26 firmware revision  "16101401"
+    0x2A28 software revision  "3.0.01"
+
+The app negotiates an MTU of 500, so packets don't get split for it.
 The grill accepts only one connection at a time. [assumed]
+
+Handshake and session messages (fff1 / fff2)
+---------------------------------------------
+
+Messages look like <type> <length> <payload>. [assumed] Sequence seen
+from the app: [known]
+
+    write fff1  0E 08 <8-byte nonce>       hello; the app's nonce is random
+    read  fff2  0A 08 <8-byte challenge>   grill's challenge
+    write fff1  0E 08 <challenge>          the challenge echoed back as-is
+    read  fff2  0B 00 00                   accepted (presumably)
+
+INIT_PAYLOAD (from the Particle library) is a hello with a fixed nonce.
+The first write alone is enough to start the status stream. Whether the
+full handshake is needed for commands: [unknown]
+
+    write fff1  0F 00 00    sent before the app disconnects. Session end or
+                            reset (likely). [unknown]
+
+Wi-Fi setup (A5 commands on fff3, B5 replies on fff4)
+-----------------------------------------------------
+
+Pattern: messages to the grill start with 0xA_, packets from it with 0xB_
+(B2 power off, B3 probes, B4 status, B5 Wi-Fi). [assumed] The Particle
+set-temperature command (A1) fits this pattern.
+
+Sequence from the app (one capture, two runs), after the full handshake:
+
+    A5 01 00   start Wi-Fi setup      -> B5 01 00 00 0C, B5 40 04 00 0C
+    A5 00 01   start network scan     -> network list as fff5 notifications,
+    A5 00 02   next (repeated)           each with B5 40 08 00 0C;
+                                          B5 40 10 00 00 when the list ends
+    A5 02 04   about to send network  -> B5 00 01 00 00
+    (write fff5: chosen network's name and password, in two chunks)
+    A5 02 08   chunk sent             -> B5 00 02 00 00
+    A5 02 10   connect                -> B5 80, 86, 8E, 9E, then 1E (byte 1)
+
+B5 byte 1 looks like a progress bitmap; 1E (bits 1-4, bit 7 cleared) was
+the final state once the grill was on Wi-Fi. Exact bit meanings: [unknown]
+
+While in Wi-Fi setup the grill sent B5 packets every 2 s and no B4/B3
+packets. Temperature and timer changes made in the app after setup did
+not go over Bluetooth; the app presumably uses Wi-Fi or the cloud. [known]
 
 A 21-byte status packet can arrive split across two notifications at the
 default ATT MTU (20 bytes of payload); PacketAssembler rejoins them.
@@ -94,7 +153,10 @@ Set temperature and timer command (write to ...fff3)
     A1 07 05 <minutes uint16> <temperature uint16>            [unconfirmed]
 
 From the Particle library, which targets an older smoker with a different
-status layout. Both values are always sent together.
+status layout. Both values are always sent together. Sending it after only
+the hello did nothing on a grill reporting model "C:G:900:1:D". If it follows the <type> <length>
+pattern above, the 07 doesn't match the 5 bytes that follow, so the format
+may differ on this grill. [unconfirmed]
 """
 
 from __future__ import annotations
@@ -124,6 +186,14 @@ ERRORS: dict[int, tuple[int, str]] = {
 
 # Control command header: A1 07 05 <minutes u16 LE> <temp u16 LE>
 SET_TEMP_TIME_HEADER = bytes([0xA1, 0x07, 0x05])
+
+# Handshake message types (fff1 writes, fff2 reads).
+HANDSHAKE_HELLO = 0x0E
+HANDSHAKE_CHALLENGE = 0x0A
+HANDSHAKE_ACCEPTED = 0x0B
+HANDSHAKE_NONCE_LEN = 8
+# Written by the app before it disconnects.
+SESSION_END = bytes([0x0F, 0x00, 0x00])
 
 
 def _s16(data: bytes, offset: int) -> int:
@@ -292,3 +362,26 @@ def build_set_temp_and_time(temp: int, minutes: int) -> bytes:
     if not 0 <= minutes <= 0xFFFF:
         raise ValueError(f"minutes out of range: {minutes}")
     return SET_TEMP_TIME_HEADER + minutes.to_bytes(2, "little") + temp.to_bytes(2, "little")
+
+
+def build_handshake(nonce: bytes) -> bytes:
+    """Build a handshake message (0E 08 <8 bytes>) to write to fff1."""
+    if len(nonce) != HANDSHAKE_NONCE_LEN:
+        raise ValueError(f"nonce must be {HANDSHAKE_NONCE_LEN} bytes, got {len(nonce)}")
+    return bytes([HANDSHAKE_HELLO, HANDSHAKE_NONCE_LEN]) + nonce
+
+
+def parse_handshake_challenge(data: bytes) -> bytes | None:
+    """Return the 8-byte challenge from an fff2 reply (0A 08 ...), else None."""
+    if (
+        len(data) >= 2 + HANDSHAKE_NONCE_LEN
+        and data[0] == HANDSHAKE_CHALLENGE
+        and data[1] == HANDSHAKE_NONCE_LEN
+    ):
+        return bytes(data[2 : 2 + HANDSHAKE_NONCE_LEN])
+    return None
+
+
+def is_handshake_accepted(data: bytes) -> bool:
+    """True for the fff2 reply seen after a successful handshake (0B 00 00)."""
+    return bytes(data[:3]) == bytes([HANDSHAKE_ACCEPTED, 0x00, 0x00])

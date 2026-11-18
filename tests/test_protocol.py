@@ -113,3 +113,22 @@ def test_assembler_split_packet():
 def test_build_command():
     cmd = protocol.build_set_temp_and_time(225, 120)
     assert cmd == bytes([0xA1, 0x07, 0x05, 0x78, 0x00, 0xE1, 0x00])
+
+
+# Handshake values from a capture of the official Android app.
+def test_handshake_from_app_capture():
+    hello = protocol.build_handshake(bytes.fromhex("8FF56A77A4BD040D"))
+    assert hello == bytes.fromhex("0E088FF56A77A4BD040D")
+
+    challenge = protocol.parse_handshake_challenge(bytes.fromhex("0A08CDBDB2CB9CE424AB"))
+    assert challenge == bytes.fromhex("CDBDB2CB9CE424AB")
+    assert protocol.build_handshake(challenge) == bytes.fromhex("0E08CDBDB2CB9CE424AB")
+
+    assert protocol.is_handshake_accepted(bytes.fromhex("0B0000"))
+    assert protocol.parse_handshake_challenge(bytes.fromhex("0B0000")) is None
+    assert not protocol.is_handshake_accepted(bytes.fromhex("0A08CDBDB2CB9CE424AB"))
+
+
+def test_init_payload_is_a_handshake_hello():
+    init = bytes([0x0E, 0x08, 0x0E, 0x1C, 0x9B, 0x02, 0x7E, 0x09, 0xBA, 0x3B])
+    assert protocol.build_handshake(init[2:]) == init
