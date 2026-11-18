@@ -22,8 +22,17 @@ INIT_PAYLOAD: Final = bytes(
     [0x0E, 0x08, 0x0E, 0x1C, 0x9B, 0x02, 0x7E, 0x09, 0xBA, 0x3B]
 )
 
-# Local names that are treated as "probably a Masterbuilt grill" when the
-# grill does not advertise its service UUID. Keep in sync with manifest.json.
+# --- Advertisement (discovery) ---------------------------------------------
+# What the grill broadcasts before any connection. It does NOT advertise the
+# 426f7567-... GATT service above; that only appears after connecting.
+# Keep these in sync with the "bluetooth" matchers in manifest.json.
+#
+# Generic 16-bit 0xFFF0 service, used by many cheap BLE devices, so it is
+# only trusted together with the manufacturer ID below.
+ADVERTISED_SERVICE_UUID: Final = "0000fff0-0000-1000-8000-00805f9b34fb"
+# Manufacturer data key 0x4842 ("BH"); its payload is the grill's MAC address.
+ADVERTISED_MANUFACTURER_ID: Final = 0x4842  # 18498
+# Fallback: advertised local names, e.g. "Masterbuilt Smoker".
 LOCAL_NAME_PREFIXES: Final = ("Masterbuilt",)
 
 # --- Connection management -------------------------------------------------

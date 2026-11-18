@@ -25,6 +25,10 @@ from .protocol import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Text of the bleak-esphome error raised when a characteristic has no CCCD.
+_CCCD_MISSING = "does not have a characteristic client config descriptor"
+_NOTIFY_TIMEOUT = 30.0
+
 
 class MasterbuiltGrill:
     """Keeps a live notification connection to one grill and holds its state."""
@@ -96,7 +100,7 @@ class MasterbuiltGrill:
                 await self._write(client, START_CHAR_UUID, INIT_PAYLOAD)
                 step = "subscribing to notifications"
                 _LOGGER.debug("%s: %s", self.address, step)
-                await client.start_notify(NOTIFY_CHAR_UUID, self._handle_notification)
+                await self._start_notify(client)
             except Exception as err:
                 _LOGGER.debug(
                     "%s: failed while %s; services seen: %s",
@@ -172,12 +176,65 @@ class MasterbuiltGrill:
         )
         await self._write(self._client, CONTROL_CHAR_UUID, payload)
 
+    async def _start_notify(self, client: BleakClient) -> None:
+        char = client.services.get_characteristic(NOTIFY_CHAR_UUID)
+        if char is None:
+            raise BleakError(f"Characteristic {NOTIFY_CHAR_UUID} not found on {self.address}")
+        try:
+            await client.start_notify(char, self._handle_notification)
+            return
+        except BleakError as err:
+            if _CCCD_MISSING not in str(err):
+                raise
+        _LOGGER.debug(
+            "%s: %s has no CCCD descriptor, subscribing without it", self.address, char.uuid
+        )
+        await self._start_notify_without_cccd(client, char)
+
+    async def _start_notify_without_cccd(
+        self, client: BleakClient, char: BleakGATTCharacteristic
+    ) -> None:
+        """Subscribe on an ESPHome proxy without writing a CCCD.
+
+        The grill's notify characteristic has no Client Characteristic
+        Configuration Descriptor; it sends notifications as soon as the init
+        payload is written. bleak-esphome refuses to subscribe without a CCCD
+        when the proxy supports remote caching, so this calls the proxy API
+        directly, the same way bleak-esphome does before its CCCD step.
+
+        This relies on bleak-esphome internals (_backend, _client,
+        _address_as_int, _notify_cancels) and only works through an ESPHome
+        proxy. Registering in _notify_cancels lets stop_notify and disconnect
+        clean up normally.
+        """
+        backend = getattr(client, "_backend", None)
+        api = getattr(backend, "_client", None)
+        address = getattr(backend, "_address_as_int", None)
+        cancels = getattr(backend, "_notify_cancels", None)
+        if (
+            address is None
+            or not isinstance(cancels, dict)
+            or not hasattr(api, "bluetooth_gatt_start_notify")
+        ):
+            raise BleakError(
+                f"{char.uuid} has no CCCD descriptor and the Bluetooth backend "
+                f"({type(backend).__name__}) can't subscribe without one"
+            )
+
+        def _on_notify(_handle: int, data: bytearray) -> None:
+            self._handle_notification(char, bytearray(data))
+
+        cancels[char.handle] = await api.bluetooth_gatt_start_notify(
+            address, char.handle, _on_notify, _NOTIFY_TIMEOUT
+        )
+
     @staticmethod
     def _describe_services(client: BleakClient) -> str:
-        """List characteristics and their properties, for debugging."""
+        """List characteristics, properties and descriptors, for debugging."""
         try:
             return ", ".join(
                 f"{char.uuid}[{'/'.join(char.properties)}]"
+                f"{{{','.join(d.uuid[4:8] for d in char.descriptors)}}}"
                 for service in client.services
                 for char in service.characteristics
             )

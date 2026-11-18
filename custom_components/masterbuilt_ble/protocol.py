@@ -16,6 +16,16 @@ tagged:
 Multi-byte values are little-endian. All temperatures are in the scale the
 grill is configured for (see configuration bit 0).
 
+Advertisement (before connecting)
+--------------------------------
+
+    local name         "Masterbuilt Smoker"                   [known]
+    service UUIDs      0xFFF0, 0x180A (Device Information)    [known]
+    manufacturer data  ID 0x4842, payload = the grill's MAC   [known]
+    tx power           -21 dBm                                [known]
+
+No readings are broadcast; a connection is needed for data. [known]
+
 Connection (GATT, service 426f7567-6854-6563-2d57-65694c69fff0)
 ---------------------------------------------------------------
 
@@ -23,8 +33,10 @@ Connection (GATT, service 426f7567-6854-6563-2d57-65694c69fff0)
                       the link. [known] Meaning of the payload bytes: [unknown]
     ...fff3  write    control commands (see below). [unconfirmed]
     ...fff4  notify   status, probe and power-off packets. [known]
+                      Has no CCCD descriptor; the grill notifies without
+                      one once INIT_PAYLOAD is written. [assumed]
 
-The grill accepts only one connection at a time. [known]
+The grill accepts only one connection at a time. [assumed]
 
 A 21-byte status packet can arrive split across two notifications at the
 default ATT MTU (20 bytes of payload); PacketAssembler rejoins them.

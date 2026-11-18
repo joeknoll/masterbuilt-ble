@@ -120,11 +120,11 @@ with your grill model and what you saw.
 - Check that your Bluetooth adapter or proxy is working and has a free
   connection slot.
 - The integration looks for devices that advertise the Bluetooth service
-  `426f7567-6854-6563-2d57-65694c69fff0`, or whose name starts with
-  `Masterbuilt`. The name prefix is a best guess. To see what your grill
-  actually advertises, go to **Settings → System → Hardware → Bluetooth →
-  Advertisement monitor**. If its name or service doesn't match, please open
-  an issue with what you see there.
+  `0000fff0-0000-1000-8000-00805f9b34fb` together with manufacturer ID
+  `18498`, or whose name starts with `Masterbuilt`. To see what your grill
+  actually advertises, go to **Settings → Connectivity → Bluetooth** and
+  click the **advertisements** link to open the advertisement monitor. If
+  your grill doesn't match, please open an issue with what you see there.
 
 **The grill keeps disconnecting.**
 

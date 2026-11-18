@@ -13,11 +13,21 @@ from homeassistant.components.bluetooth import (
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
 
-from .const import DOMAIN, LOCAL_NAME_PREFIXES, SERVICE_UUID
+from .const import (
+    ADVERTISED_MANUFACTURER_ID,
+    ADVERTISED_SERVICE_UUID,
+    DOMAIN,
+    LOCAL_NAME_PREFIXES,
+)
 
 
 def is_masterbuilt(info: BluetoothServiceInfoBleak) -> bool:
-    if SERVICE_UUID in (uuid.lower() for uuid in info.service_uuids):
+    """Match the grill's advertisement; mirrors the manifest.json matchers."""
+    service_uuids = {uuid.lower() for uuid in info.service_uuids}
+    if (
+        ADVERTISED_SERVICE_UUID in service_uuids
+        and ADVERTISED_MANUFACTURER_ID in info.manufacturer_data
+    ):
         return True
     return bool(info.name) and info.name.startswith(LOCAL_NAME_PREFIXES)
 
