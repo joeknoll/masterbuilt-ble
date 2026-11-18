@@ -1,0 +1,115 @@
+"""Tests for the packet parser, using real packets captured from a grill.
+
+The packet layout, including which fields are still unknown, is documented
+at the top of custom_components/masterbuilt_ble/protocol.py.
+
+Run with:  python -m pytest tests/
+protocol.py has no Home Assistant dependency, so it is loaded straight from
+its file path.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import pathlib
+import sys
+
+_PATH = pathlib.Path(__file__).parents[1] / "custom_components" / "masterbuilt_ble" / "protocol.py"
+_spec = importlib.util.spec_from_file_location("masterbuilt_protocol", _PATH)
+protocol = importlib.util.module_from_spec(_spec)
+sys.modules["masterbuilt_protocol"] = protocol
+_spec.loader.exec_module(protocol)
+
+
+def status(hexstr: str):
+    pkt = protocol.parse_packet(bytes.fromhex(hexstr))
+    assert isinstance(pkt, protocol.GrillStatus)
+    return pkt
+
+
+def test_fresh_start_fahrenheit():
+    s = status("B429020048000000E10000000000000000BC029600")
+    assert s.fahrenheit
+    assert not s.heating
+    assert not s.timer_active
+    assert s.cavity_temp == 72
+    assert s.target_temp == 225
+    assert s.max_temp == 700
+    assert s.min_temp == 150
+    assert s.active_errors == []
+
+
+def test_heat_to_420_no_timer():
+    s = status("B4292300A2010000A40100000000000000BC029600")
+    assert s.heating
+    assert s.cavity_temp == 418
+    assert s.target_temp == 420
+
+
+def test_heat_with_timer_fahrenheit():
+    s = status("B42B23004A000000E10000720078006400BC029600")
+    assert s.fahrenheit and s.heating and s.timer_active
+    assert s.remaining_minutes == 114
+    assert s.set_minutes == 120
+    assert s.unknown_byte_15 == 100
+
+
+def test_celsius_heat_and_timer():
+    s = status("B42A210016000000C9000077007800640073014100")
+    assert not s.fahrenheit
+    assert s.heating and s.timer_active
+    assert s.cavity_temp == 22
+    assert s.target_temp == 201
+    assert s.remaining_minutes == 119
+    assert s.max_temp == 371
+    assert s.min_temp == 65
+
+
+def test_celsius_no_target_is_none():
+    # EF FF = -17, i.e. 0 °F converted to °C
+    s = status("B42801001E000000EFFF0000000000000073014100")
+    assert s.target_temp_raw == -17
+    assert s.target_temp is None
+
+
+def test_fahrenheit_no_target_is_none():
+    s = status("B42903004C000000000000000000000000BC029600")
+    assert s.target_temp is None
+
+
+def test_error_bitmap():
+    s = status("B42A210816000000C900006F007800640073014100")
+    assert s.active_errors == [4]
+    assert s.has_error(4)
+
+
+def test_probes():
+    p = protocol.parse_packet(bytes.fromhex("B30119000000000000000000000000000000"))
+    assert isinstance(p, protocol.ProbeStatus)
+    assert p.temperature(1) == 25
+    assert p.temperature(2) is None
+
+    p = protocol.parse_packet(bytes.fromhex("B30200004700000000000000000000000000"))
+    assert p.temperature(2) == 71
+    p = protocol.parse_packet(bytes.fromhex("B304000000004A0000000000000000000000"))
+    assert p.temperature(3) == 74
+    p = protocol.parse_packet(bytes.fromhex("B30800000000000017000000000000000000"))
+    assert p.temperature(4) == 23
+
+
+def test_power_off():
+    assert isinstance(protocol.parse_packet(bytes.fromhex("B2000000")), protocol.PowerOff)
+    assert isinstance(protocol.parse_packet(b"\x00"), protocol.PowerOff)
+
+
+def test_assembler_split_packet():
+    raw = bytes.fromhex("B42B23004A000000E10000720078006400BC029600")
+    a = protocol.PacketAssembler()
+    assert a.feed(raw[:20]) == []
+    assert a.feed(raw[20:]) == [raw]
+    assert a.feed(raw) == [raw]
+
+
+def test_build_command():
+    cmd = protocol.build_set_temp_and_time(225, 120)
+    assert cmd == bytes([0xA1, 0x07, 0x05, 0x78, 0x00, 0xE1, 0x00])
