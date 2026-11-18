@@ -23,8 +23,13 @@ def is_masterbuilt(info: BluetoothServiceInfoBleak) -> bool:
 
 
 def device_title(info: BluetoothServiceInfoBleak) -> str:
-    if info.name and info.name.replace("-", ":").upper() != info.address.upper():
-        return f"Masterbuilt {info.name}"
+    name = (info.name or "").strip()
+    # Some stacks report the MAC address as the name when there is none.
+    if name and name.replace("-", ":").upper() != info.address.upper():
+        # Grills usually advertise "Masterbuilt ..." already; don't double it.
+        if name.lower().startswith("masterbuilt"):
+            return name
+        return f"Masterbuilt {name}"
     return f"Masterbuilt {info.address[-5:].replace(':', '')}"
 
 
