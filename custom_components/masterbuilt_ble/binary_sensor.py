@@ -25,6 +25,8 @@ from .protocol import ERRORS
 class MasterbuiltBinarySensorEntityDescription(BinarySensorEntityDescription):
     is_on_fn: Callable[[MasterbuiltGrill], bool | None]
     always_available: bool = False
+    # Available whenever connected, even without a status packet.
+    needs_status: bool = True
 
 
 def _status(fn: Callable) -> Callable[[MasterbuiltGrill], bool | None]:
@@ -43,6 +45,12 @@ BINARY_SENSORS: tuple[MasterbuiltBinarySensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         always_available=True,
         is_on_fn=lambda grill: grill.connected,
+    ),
+    MasterbuiltBinarySensorEntityDescription(
+        key="bluetooth_readings",
+        translation_key="bluetooth_readings",
+        needs_status=False,
+        is_on_fn=lambda grill: grill.bluetooth_readings,
     ),
     MasterbuiltBinarySensorEntityDescription(
         key="heating",
@@ -87,14 +95,34 @@ class MasterbuiltBinarySensor(MasterbuiltEntity, BinarySensorEntity):
 
     @property
     def available(self) -> bool:
-        return self.entity_description.always_available or super().available
+        if self.entity_description.always_available:
+            return True
+        if not self.entity_description.needs_status:
+            return self.grill.connected
+        return super().available
 
     @property
     def is_on(self) -> bool | None:
         return self.entity_description.is_on_fn(self.grill)
 
     @property
+    def icon(self) -> str | None:
+        if self.entity_description.key != "bluetooth_readings":
+            return None
+        return "mdi:wifi" if self.is_on is False else "mdi:bluetooth"
+
+    @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self.entity_description.key == "bluetooth_readings":
+            wifi = self.grill.wifi_status
+            if wifi is None:
+                return None
+            return {
+                "mode": "Bluetooth" if self.is_on else "Wi-Fi",
+                "wifi_state": wifi.states,
+                "wifi_errors": wifi.errors,
+                "wifi_networks_found": wifi.networks_found,
+            }
         if self.entity_description.key != "problem" or self.grill.status is None:
             return None
         errors = self.grill.status.active_errors

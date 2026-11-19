@@ -36,6 +36,16 @@ async def async_get_config_entry_diagnostics(
         if status
         else None,
         "probes": _hexify(asdict(grill.probes)) if grill.probes else None,
+        "bluetooth_readings": grill.bluetooth_readings,
+        "wifi_status": _hexify(asdict(grill.wifi_status)) | {
+            "states": grill.wifi_status.states,
+            "errors": grill.wifi_status.errors,
+            "state_flags_bin": f"{grill.wifi_status.state_flags:08b}",
+            "transfer_flags_bin": f"{grill.wifi_status.transfer_flags:08b}",
+            "error_flags_bin": f"{grill.wifi_status.error_flags:08b}",
+        }
+        if grill.wifi_status
+        else None,
         "last_unknown_packet": grill.last_unknown_packet.hex(" ").upper()
         if grill.last_unknown_packet
         else None,

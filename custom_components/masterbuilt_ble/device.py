@@ -25,6 +25,7 @@ from .protocol import (
     PacketAssembler,
     PowerOff,
     ProbeStatus,
+    WifiStatus,
     build_handshake,
     build_set_temp_and_time,
     is_handshake_accepted,
@@ -50,6 +51,10 @@ class MasterbuiltGrill:
         self.powered_off = False
         self.last_packet_monotonic: float | None = None
         self.last_unknown_packet: bytes | None = None
+        self.wifi_status: WifiStatus | None = None
+        # True while the grill sends readings over Bluetooth, False once it
+        # sends Wi-Fi status packets instead, None until the first packet.
+        self.bluetooth_readings: bool | None = None
 
         self._ble_device: BLEDevice | None = None
         self._client: BleakClient | None = None
@@ -162,8 +167,23 @@ class MasterbuiltGrill:
             if isinstance(packet, GrillStatus):
                 self.status = packet
                 self.powered_off = False
+                self.bluetooth_readings = True
             elif isinstance(packet, ProbeStatus):
                 self.probes = packet
+                self.bluetooth_readings = True
+            elif isinstance(packet, WifiStatus):
+                if self.bluetooth_readings is not False:
+                    _LOGGER.warning(
+                        "%s: the grill is in Wi-Fi mode and is not sending readings "
+                        "over Bluetooth (Wi-Fi state: %s)",
+                        self.address,
+                        ", ".join(packet.states) or "not connected",
+                    )
+                self.wifi_status = packet
+                self.bluetooth_readings = False
+                # Earlier readings are no longer updated; don't show them as live.
+                self.status = None
+                self.probes = None
             elif isinstance(packet, PowerOff):
                 self.powered_off = True
             else:

@@ -9,6 +9,13 @@ Assistant.
 - **Automatic discovery.** Home Assistant finds the grill when it is switched on and in range.
 - **Push updates.** Readings arrive as soon as the grill sends them.
 
+> [!IMPORTANT]
+> **The grill only sends readings over Bluetooth while it is not set up on
+> Wi-Fi.** Once a grill has been set up on Wi-Fi, it sends only Wi-Fi
+> status over Bluetooth, and this integration has no temperatures to show.
+> The **Bluetooth readings** sensor tells you which mode the grill is in. See
+> [Only "Connected" has a value](#only-connected-has-a-value).
+
 > [!NOTE]
 > This is an unofficial, community project. It is not affiliated with or
 > endorsed by Masterbuilt. The protocol was worked out from Bluetooth packet
@@ -63,12 +70,14 @@ If the grill still isn't found, see [Troubleshooting](#troubleshooting).
 | Target temperature | Sensor | The temperature the grill is heating to. Shows *unknown* when no target is set. |
 | Timer remaining | Sensor | Minutes left on the timer. |
 | Timer set | Sensor | Total minutes the timer was set to. |
+| Fan intensity | Sensor | How hard the fan is running, 0–100 %. |
 | Probe 1–4 | Sensor | Meat probe temperatures. Show *unknown* when a probe is unplugged. |
 | Heating | Binary sensor | On while the grill is heating. |
 | Timer | Binary sensor | On while a timer is running. |
 | Problem | Binary sensor | On when the grill reports any error. Its attributes list the active errors. |
 | Err 1 – Err 5 | Binary sensor | One per grill error code (probe not plugged in, meat probe malfunction, overheated, charcoal failed to ignite, meat probe above 300 °F). |
 | Connected | Binary sensor | Whether Home Assistant is connected to the grill. |
+| Bluetooth readings | Binary sensor | On while the grill sends readings over Bluetooth. Off when the grill is in Wi-Fi mode and sends only Wi-Fi status; its attributes then show the Wi-Fi state, any Wi-Fi errors and the number of networks found. |
 
 Temperatures use the scale the grill is set to (°F or °C). Home Assistant
 converts them to the units your system uses.
@@ -78,43 +87,25 @@ device page if you want them:
 
 - **Probe 5–8.** For controllers that support more than four probes.
 - **Minimum / maximum settable temperature.**
-- **Raw status packet, raw probe packet, status byte 15.** Diagnostic
+- **Raw status packet, raw probe packet.** Diagnostic
   entities for people helping to decode the protocol.
-- **Set target temperature / Set timer (experimental).** See
-  [Controlling the grill](#controlling-the-grill-experimental).
 
-## Controlling the grill (experimental)
+## Controlling the grill (work in progress)
 
-> [!WARNING]
-> Remote control is untested on most grills. Only try it while you are
-> standing next to the grill and can see its display.
+Setting the target temperature and timer from Home Assistant is a goal, but
+it isn't available yet. A "set temperature and timer" command is documented
+in Particle's
+[ble-gateway-library](https://github.com/particle-iot/ble-gateway-library/blob/main/src/peripherals/masterbuilt-smoker.cpp)
+for an older Masterbuilt smoker, but it had no effect on the grill this
+integration was tested with. The code for it is kept in the repository and
+the entities will return once a working command is found.
 
-The integration includes two number entities that send a "set temperature and
-timer" command to the grill. The command comes from Particle's
-[ble-gateway-library](https://github.com/particle-iot/ble-gateway-library/blob/main/src/peripherals/masterbuilt-smoker.cpp),
-which was written for an older Masterbuilt smoker. It may or may not work on
-your grill.
-
-To try it:
-
-1. On the grill's device page, enable **Set target temperature (experimental)**
-   and **Set timer (experimental)**.
-2. With the grill on, set a new value.
-3. Check that the grill's display and the **Target temperature** sensor both
-   change.
-
-The grill expects the temperature and timer in the same command. When you
-change the temperature, the integration resends the minutes left on the timer
-(or 0 if no timer is running). When you change the timer, it resends the
-current target temperature.
-
-If nothing happens, turn on debug logging (below) and check whether the
-command was sent. Please [open an issue](https://github.com/joeknoll/masterbuilt-ble/issues)
-with your grill model and what you saw.
+If you have a grill where control works, or a packet capture of it, please
+[open an issue](https://github.com/joeknoll/masterbuilt-ble/issues).
 
 ## Troubleshooting
 
-**The grill isn't discovered.**
+### The grill isn't discovered
 
 - Make sure the Masterbuilt phone app is closed and the grill is switched on.
 - Check that your Bluetooth adapter or proxy is working and has a free
@@ -126,12 +117,53 @@ with your grill model and what you saw.
   click the **advertisements** link to open the advertisement monitor. If
   your grill doesn't match, please open an issue with what you see there.
 
-**The grill keeps disconnecting.**
+### The grill keeps disconnecting
 
 - Move the adapter or proxy closer to the grill.
 - Make sure nothing else (such as the phone app) is connecting to the grill.
 
-**Turn on debug logging.** Add this to `configuration.yaml` and restart:
+### Only "Connected" has a value
+
+Once a grill has been set up on Wi-Fi, it stops sending readings over
+Bluetooth. The **Bluetooth readings** sensor turns off, and the other
+entities show as unavailable. The grill sends Wi-Fi status packets
+instead, which look like `packet B5 1E 00 00 00` in the debug log.
+
+To get readings over Bluetooth again, the grill's saved Wi-Fi network has to
+be cleared. Check your grill's manual or ask Masterbuilt support how to do
+this for your controller. Making the saved network unreachable, for example
+by blocking the grill on your router, is not enough.
+
+The Wi-Fi status packet is 5 bytes:
+
+| Byte | Contents |
+|---|---|
+| 0 | `B5`, the packet type |
+| 1 | Connection state (bitmap below) |
+| 2 | Data transfer state during Wi-Fi setup (bitmap below) |
+| 3 | Setup errors (bitmap below) |
+| 4 | Number of Wi-Fi networks found in the last scan |
+
+Each bit in bytes 1–3 is a separate flag:
+
+| Bit | Value | Byte 1: connection state | Byte 2: data transfer | Byte 3: errors |
+|---|---|---|---|---|
+| 0 | `01` | Scanning for networks | Ready to receive data | Network not found |
+| 1 | `02` | Connected to Wi-Fi | Received data | Wrong Wi-Fi password |
+| 2 | `04` | Connected to the internet | Ready to send data | No Wi-Fi networks in range |
+| 3 | `08` | Connected to the cloud service | Sent data | Network has no internet access |
+| 4 | `10` | Synced with its cloud state | Finished sending data | Can't reach the cloud service |
+| 5 | `20` | About to report its firmware version | — | Can't sync with the cloud |
+| 6 | `40` | Network list ready to send | — | Firmware update failed |
+| 7 | `80` | Busy connecting or updating | — | — |
+
+Add the values together to read a byte. For example, byte 1 = `1E` is
+`02 + 04 + 08 + 10`: connected to Wi-Fi, the internet and the cloud, and
+synced. `00` means not connected.
+
+### Turn on debug logging
+
+Add this to `configuration.yaml` and restart:
 
 ```yaml
 logger:
@@ -141,9 +173,12 @@ logger:
 
 Every Bluetooth packet is then written to the log as hex.
 
-**Download diagnostics.** On the grill's device page, open the menu (⋮) and
+### Download diagnostics
+
+On the grill's device page, open the menu (⋮) and
 choose **Download diagnostics**. The file contains the most recent status and
-probe packets, with the bitmaps written out in binary. Attaching it to an issue
+probe packets (or the latest Wi-Fi status packet), with the bitmaps written
+out in binary. Attaching it to an issue
 is very helpful.
 
 ## Contributing
@@ -157,11 +192,9 @@ Some fields in the grill's status packet are still unknown. The packet layout
 is documented in [`protocol.py`](custom_components/masterbuilt_ble/protocol.py).
 Open questions:
 
-- Status bytes 6–7, 10 and 16.
-- Byte 15 is `0x64` (100) in most heating captures. It might be the fan speed in percent.
+- Status bytes 6–7 and 10.
 - Operation bitmap bit 0.
 - Configuration bits 3 and 5, which are always set in captures so far.
-- In one "lid open" capture, the target temperature changes to 700 (`BC 02`).
 
 To help, enable the raw packet sensors or debug logging, change one thing on
 the grill at a time, and note which bytes change.

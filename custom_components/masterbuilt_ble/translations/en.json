@@ -28,13 +28,14 @@
       "timer_set": { "name": "Timer set" },
       "max_temperature": { "name": "Maximum settable temperature" },
       "min_temperature": { "name": "Minimum settable temperature" },
-      "status_byte_15": { "name": "Status byte 15 (unknown)" },
+      "fan_intensity": { "name": "Fan intensity" },
       "raw_status": { "name": "Raw status packet" },
       "raw_probes": { "name": "Raw probe packet" },
       "probe_temperature": { "name": "Probe {probe}" }
     },
     "binary_sensor": {
       "connected": { "name": "Connected" },
+      "bluetooth_readings": { "name": "Bluetooth readings" },
       "heating": { "name": "Heating" },
       "timer_active": { "name": "Timer" },
       "problem": { "name": "Problem" },

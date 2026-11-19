@@ -9,7 +9,9 @@ from homeassistant.core import HomeAssistant
 from .coordinator import MasterbuiltCoordinator
 from .device import MasterbuiltGrill
 
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.NUMBER, Platform.SENSOR]
+# The number platform (set temperature / timer) is not loaded: the command
+# hasn't been confirmed to work. number.py is kept for when it is.
+PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
 type MasterbuiltConfigEntry = ConfigEntry[MasterbuiltCoordinator]
 

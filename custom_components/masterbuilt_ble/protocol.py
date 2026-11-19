@@ -79,23 +79,53 @@ Pattern: messages to the grill start with 0xA_, packets from it with 0xB_
 (B2 power off, B3 probes, B4 status, B5 Wi-Fi). [assumed] The Particle
 set-temperature command (A1) fits this pattern.
 
-Sequence from the app (one capture, two runs), after the full handshake:
+Commands the app wrote to fff3 during Wi-Fi setup, in order [known]:
 
-    A5 01 00   start Wi-Fi setup      -> B5 01 00 00 0C, B5 40 04 00 0C
-    A5 00 01   start network scan     -> network list as fff5 notifications,
-    A5 00 02   next (repeated)           each with B5 40 08 00 0C;
-                                          B5 40 10 00 00 when the list ends
-    A5 02 04   about to send network  -> B5 00 01 00 00
-    (write fff5: chosen network's name and password, in two chunks)
-    A5 02 08   chunk sent             -> B5 00 02 00 00
-    A5 02 10   connect                -> B5 80, 86, 8E, 9E, then 1E (byte 1)
+    A5 01 00   (once)
+    A5 00 01   (once)
+    A5 00 02   (repeated, while reading the network list from fff5)
+    A5 02 04   then the network name and password written to fff5
+    A5 02 08
+    A5 02 10
 
-B5 byte 1 looks like a progress bitmap; 1E (bits 1-4, bit 7 cleared) was
-the final state once the grill was on Wi-Fi. Exact bit meanings: [unknown]
+The grill answers each with a B5 packet. While the grill is on Wi-Fi it
+sends B5 packets (about every 2 s) instead of B4/B3 readings.
 
-While in Wi-Fi setup the grill sent B5 packets every 2 s and no B4/B3
-packets. Temperature and timer changes made in the app after setup did
-not go over Bluetooth; the app presumably uses Wi-Fi or the cloud. [known]
+Wi-Fi status packet (0xB5, 5 bytes) [known]
+-------------------------------------------
+
+    00     packet id 0xB5
+    01     connection state bitmap
+             bit0  scanning for networks
+             bit1  connected to Wi-Fi
+             bit2  connected to the internet
+             bit3  connected to the cloud service
+             bit4  synced with its cloud state
+             bit5  about to report its firmware version
+             bit6  network list ready to send
+             bit7  busy connecting or updating
+    02     data transfer bitmap (network list and credentials, via fff5)
+             bit0  ready to receive data
+             bit1  received data
+             bit2  ready to send data
+             bit3  sent data
+             bit4  finished sending data
+    03     error bitmap
+             bit0  network not found
+             bit1  wrong Wi-Fi password
+             bit2  no Wi-Fi networks in range
+             bit3  network has no internet access
+             bit4  can't reach the cloud service
+             bit5  can't sync with the cloud
+             bit6  firmware update failed
+    04     number of Wi-Fi networks found
+
+Example: during setup byte 1 goes 80 (busy), 86 (Wi-Fi + internet),
+8E (+ cloud), 9E (+ synced), then 1E (fully connected, no longer busy).
+00 means idle with no connection.
+
+Temperature and timer changes made in the app did not go over Bluetooth.
+[known]
 
 A 21-byte status packet can arrive split across two notifications at the
 default ATT MTU (20 bytes of payload); PacketAssembler rejoins them.
@@ -125,9 +155,8 @@ Status packet (0xB4, 21 bytes)
     10     always 0 in captures                               [unknown]
     11-12  remaining timer minutes, uint16                    [known]
     13-14  set timer minutes, uint16                          [known]
-    15     0x64 (100) in most heating captures, 0 otherwise.  [unknown]
-             Possibly fan speed %, or related to the timer.
-    16     always 0 in captures                               [unknown]
+    15-16  fan intensity, uint16, 0-100 %                     [known]
+             100 while heating up in most captures.
     17-18  maximum settable temperature, int16                [known]
              700 °F / 371 °C in captures.
     19-20  minimum settable temperature, int16                [known]
@@ -166,13 +195,16 @@ from dataclasses import dataclass
 STATUS_PACKET_ID = 0xB4
 PROBE_PACKET_ID = 0xB3
 POWER_OFF_PACKET_ID = 0xB2
+WIFI_STATUS_PACKET_ID = 0xB5
 
 STATUS_PACKET_LEN = 21
 PROBE_PACKET_LEN = 18
+WIFI_STATUS_PACKET_LEN = 5
 
 EXPECTED_LENGTHS = {
     STATUS_PACKET_ID: STATUS_PACKET_LEN,
     PROBE_PACKET_ID: PROBE_PACKET_LEN,
+    WIFI_STATUS_PACKET_ID: WIFI_STATUS_PACKET_LEN,
 }
 
 # Error bitmap bit -> (error number, description)
@@ -182,6 +214,29 @@ ERRORS: dict[int, tuple[int, str]] = {
     2: (3, "Grill overheated"),
     3: (4, "Charcoal failed to ignite"),
     4: (5, "Meat probe temperature above 300°F"),
+}
+
+# Wi-Fi status (0xB5) byte 1 bits -> description
+WIFI_STATES: dict[int, str] = {
+    0: "Scanning for networks",
+    1: "Connected to Wi-Fi",
+    2: "Connected to the internet",
+    3: "Connected to the cloud service",
+    4: "Synced with its cloud state",
+    5: "About to report its firmware version",
+    6: "Network list ready to send",
+    7: "Busy connecting or updating",
+}
+
+# Wi-Fi status (0xB5) byte 3 bits -> description
+WIFI_ERRORS: dict[int, str] = {
+    0: "Network not found",
+    1: "Wrong Wi-Fi password",
+    2: "No Wi-Fi networks in range",
+    3: "Network has no internet access",
+    4: "Can't reach the cloud service",
+    5: "Can't sync with the cloud",
+    6: "Firmware update failed",
 }
 
 # Control command header: A1 07 05 <minutes u16 LE> <temp u16 LE>
@@ -216,7 +271,7 @@ class GrillStatus:
     target_temp_raw: int
     remaining_minutes: int
     set_minutes: int
-    unknown_byte_15: int
+    fan_intensity: int
     max_temp: int
     min_temp: int
 
@@ -233,7 +288,7 @@ class GrillStatus:
             target_temp_raw=_s16(data, 8),
             remaining_minutes=_u16(data, 11),
             set_minutes=_u16(data, 13),
-            unknown_byte_15=data[15],
+            fan_intensity=_u16(data, 15),
             max_temp=_s16(data, 17),
             min_temp=_s16(data, 19),
         )
@@ -303,7 +358,46 @@ class PowerOff:
     raw: bytes
 
 
-Packet = GrillStatus | ProbeStatus | PowerOff
+@dataclass(frozen=True)
+class WifiStatus:
+    """Decoded 0xB5 Wi-Fi status packet.
+
+    A grill that has been set up on Wi-Fi sends these instead of status and
+    probe packets.
+    """
+
+    raw: bytes
+    state_flags: int
+    transfer_flags: int
+    error_flags: int
+    networks_found: int
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> WifiStatus:
+        if len(data) < WIFI_STATUS_PACKET_LEN or data[0] != WIFI_STATUS_PACKET_ID:
+            raise ValueError(f"Not a Wi-Fi status packet: {data.hex()}")
+        return cls(
+            raw=bytes(data[:WIFI_STATUS_PACKET_LEN]),
+            state_flags=data[1],
+            transfer_flags=data[2],
+            error_flags=data[3],
+            networks_found=data[4],
+        )
+
+    @property
+    def wifi_connected(self) -> bool:
+        return bool(self.state_flags & 0x02)
+
+    @property
+    def states(self) -> list[str]:
+        return [desc for bit, desc in WIFI_STATES.items() if self.state_flags & (1 << bit)]
+
+    @property
+    def errors(self) -> list[str]:
+        return [desc for bit, desc in WIFI_ERRORS.items() if self.error_flags & (1 << bit)]
+
+
+Packet = GrillStatus | ProbeStatus | PowerOff | WifiStatus
 
 
 def parse_packet(data: bytes) -> Packet | None:
@@ -315,6 +409,8 @@ def parse_packet(data: bytes) -> Packet | None:
         return GrillStatus.from_bytes(data)
     if packet_id == PROBE_PACKET_ID and len(data) >= PROBE_PACKET_LEN:
         return ProbeStatus.from_bytes(data)
+    if packet_id == WIFI_STATUS_PACKET_ID and len(data) >= WIFI_STATUS_PACKET_LEN:
+        return WifiStatus.from_bytes(data)
     if packet_id == POWER_OFF_PACKET_ID and data[1:4] == b"\x00\x00\x00":
         return PowerOff(bytes(data))
     if data == b"\x00":

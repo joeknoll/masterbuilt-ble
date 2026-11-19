@@ -51,7 +51,7 @@ def test_heat_with_timer_fahrenheit():
     assert s.fahrenheit and s.heating and s.timer_active
     assert s.remaining_minutes == 114
     assert s.set_minutes == 120
-    assert s.unknown_byte_15 == 100
+    assert s.fan_intensity == 100
 
 
 def test_celsius_heat_and_timer():
@@ -132,3 +132,31 @@ def test_handshake_from_app_capture():
 def test_init_payload_is_a_handshake_hello():
     init = bytes([0x0E, 0x08, 0x0E, 0x1C, 0x9B, 0x02, 0x7E, 0x09, 0xBA, 0x3B])
     assert protocol.build_handshake(init[2:]) == init
+
+
+def test_wifi_status_connected():
+    pkt = protocol.parse_packet(bytes.fromhex("B51E000000"))
+    assert isinstance(pkt, protocol.WifiStatus)
+    assert pkt.wifi_connected
+    assert pkt.states == [
+        "Connected to Wi-Fi",
+        "Connected to the internet",
+        "Connected to the cloud service",
+        "Synced with its cloud state",
+    ]
+    assert pkt.errors == []
+
+
+def test_wifi_status_scan_reports_network_count():
+    pkt = protocol.parse_packet(bytes.fromhex("B54004000C"))
+    assert isinstance(pkt, protocol.WifiStatus)
+    assert not pkt.wifi_connected
+    assert pkt.states == ["Network list ready to send"]
+    assert pkt.transfer_flags == 0x04
+    assert pkt.networks_found == 12
+
+
+def test_wifi_status_idle():
+    pkt = protocol.parse_packet(bytes.fromhex("B500000000"))
+    assert isinstance(pkt, protocol.WifiStatus)
+    assert pkt.states == [] and pkt.errors == []
