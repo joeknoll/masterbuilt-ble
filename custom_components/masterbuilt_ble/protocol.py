@@ -4,9 +4,9 @@ This module has no Home Assistant or Bleak dependencies so it can be unit
 tested on its own.
 
 Everything below was reverse engineered from Bluetooth captures of a Gravity
-Series-style controller, plus the GATT layout and control command published
-in particle-iot/ble-gateway-library (masterbuilt-smoker.cpp). Each field is
-tagged:
+Series-style controller, plus the GATT layout published in
+particle-iot/ble-gateway-library (masterbuilt-smoker.cpp) and other
+implementations of the same protocol. Each field is tagged:
 
     [known]       matches every capture so far
     [assumed]     consistent with captures, but only partly observed
@@ -60,13 +60,14 @@ Handshake and session messages (fff1 / fff2)
 Messages look like <type> <length> <payload>. [assumed] Sequence seen
 from the app: [known]
 
-    write fff1  0E 08 <8-byte nonce>       hello; the app's nonce is random
+    write fff1  0E 08 <8-byte nonce>       hello
     read  fff2  0A 08 <8-byte challenge>   grill's challenge
     write fff1  0E 08 <challenge>          the challenge echoed back as-is
     read  fff2  0B 00 00                   accepted (presumably)
 
-INIT_PAYLOAD (from the Particle library) is a hello with a fixed nonce.
-The first write alone is enough to start the status stream. Whether the
+The nonce is the grill's MAC address XORed with a pairing code kept per
+grill. [unconfirmed] INIT_PAYLOAD (from the Particle library) is a hello
+with a fixed nonce, and is enough to start the status stream. Whether the
 full handshake is needed for commands: [unknown]
 
     write fff1  0F 00 00    sent before the app disconnects. Session end or
@@ -79,14 +80,19 @@ Pattern: messages to the grill start with 0xA_, packets from it with 0xB_
 (B2 power off, B3 probes, B4 status, B5 Wi-Fi). [assumed] The Particle
 set-temperature command (A1) fits this pattern.
 
-Commands the app wrote to fff3 during Wi-Fi setup, in order [known]:
+A5 <byte 1> <byte 2>. Byte 1 picks the operation, byte 2 steps the data
+transfer through fff5 (same bits as B5 byte 2):
 
-    A5 01 00   (once)
-    A5 00 01   (once)
-    A5 00 02   (repeated, while reading the network list from fff5)
-    A5 02 04   then the network name and password written to fff5
-    A5 02 08
-    A5 02 10
+    A5 01 00   start a Wi-Fi scan                                 [known]
+    A5 00 01   ready to receive (the network list)                [known]
+    A5 00 02   data received; send the next part                  [known]
+    A5 02 04   about to send Wi-Fi credentials (then fff5 write)  [known]
+    A5 02 08   credentials part written                           [known]
+    A5 02 10   credentials done; connect                          [known]
+    A5 08 00   read the saved network name                        [unconfirmed]
+    A5 04 04   about to send cloud credentials                    [unconfirmed]
+
+There is no known command that clears the saved network.
 
 The grill answers each with a B5 packet. While the grill is on Wi-Fi it
 sends B5 packets (about every 2 s) instead of B4/B3 readings.
@@ -124,8 +130,8 @@ Example: during setup byte 1 goes 80 (busy), 86 (Wi-Fi + internet),
 8E (+ cloud), 9E (+ synced), then 1E (fully connected, no longer busy).
 00 means idle with no connection.
 
-Temperature and timer changes made in the app did not go over Bluetooth.
-[known]
+While the grill is on Wi-Fi, temperature and timer changes made from a
+phone go through the cloud, not Bluetooth. [known]
 
 A 21-byte status packet can arrive split across two notifications at the
 default ATT MTU (20 bytes of payload); PacketAssembler rejoins them.
@@ -134,33 +140,53 @@ Status packet (0xB4, 21 bytes)
 ------------------------------
 
     00     packet id 0xB4                                     [known]
-    01     configuration bitmap
+    01     configuration bitmap: units, timer, and which features the
+           controller has
              bit0  1 = Fahrenheit, 0 = Celsius                [known]
-             bit1  timer active                               [known]
-             bit3  always set in captures                     [unknown]
-             bit5  always set in captures                     [unknown]
-             bits 2, 4, 6, 7  never seen set                  [unknown]
+             bit1  timer on                                   [known]
+             bit2  timer counts up instead of down            [unconfirmed]
+             bit3  min/max temperatures present (17-20)       [assumed]
+             bit4  has an electric smoker element (06-07)     [unconfirmed]
+             bit5  has a fan / charcoal heat source           [assumed]
+                   (08-09, 15-16)
+             bit6  has a broiler (byte 10, low nibble)        [unconfirmed]
+             bit7  has smoke on demand (byte 10, high nibble) [unconfirmed]
+           A Gravity Series grill reports bits 3 and 5 always set, and
+           bits 2, 4, 6 and 7 never set. [known]
     02     operation bitmap
-             bit5  heating / running                          [known]
-             bit1  set in Fahrenheit captures                 [assumed]
-             bit0  set in all Celsius and one Fahrenheit      [unknown]
-                   capture
+             bit0  powered on                                 [assumed]
+             bit1  Bluetooth control enabled                  [unconfirmed]
+             bit2  door / lid open                            [unconfirmed]
+             bit3  count-up timer running                     [unconfirmed]
+             bit4  smoker element on                          [unconfirmed]
+             bit5  fan on (heating)                           [known]
+             bit6  broiler on                                 [unconfirmed]
+             bit7  smoke on demand on                         [unconfirmed]
     03     error bitmap, bit n = Err n+1 (Err 1-5)            [assumed]
-             Only 0x08 (Err 4) has been seen in a capture.
-    04-05  cavity (grill) temperature, int16                  [known]
-    06-07  always 0 in captures                               [unknown]
-    08-09  target temperature, int16                          [known]
-             0 in °F / -17 in °C (0 °F converted) = no target.
-             Reads 700 (BC 02) in one "lid open" capture.     [unknown]
-    10     always 0 in captures                               [unknown]
+             Only 0x08 (Err 4, charcoal failed to ignite) has been seen.
+             The byte can also be read as four 2-bit fields (bits 0-1,
+             2-3, 4-5, 6-7), each 0-3; for a single error that gives the
+             same bit, so the two readings agree on every capture.
+    04-05  cavity (grill) temperature                         [known]
+    06-07  smoker element target temperature; 0 on a grill
+           without one                                        [unconfirmed]
+    08-09  target (fan) temperature                           [known]
+             0 in °F / -17 in °C (0 °F converted) = no target.[unknown]
+    10     low nibble broiler level, high nibble smoke-on-
+           demand level; 0 on a grill without them            [unconfirmed]
     11-12  remaining timer minutes, uint16                    [known]
     13-14  set timer minutes, uint16                          [known]
     15-16  fan intensity, uint16, 0-100 %                     [known]
              100 while heating up in most captures.
-    17-18  maximum settable temperature, int16                [known]
+    17-18  maximum settable temperature                       [known]
              700 °F / 371 °C in captures.
-    19-20  minimum settable temperature, int16                [known]
+    19-20  minimum settable temperature                       [known]
              150 °F / 65 °C in captures.
+
+The temperatures (04-09, 17-20) may be IEEE 11073 16-bit SFLOATs (4-bit
+signed exponent, 12-bit signed mantissa) rather than int16. [unconfirmed]
+Every value captured so far has an exponent of 0, where the two encodings
+are the same for -2048..2047; they are read as int16 here.
 
 Probe packet (0xB3, 18 bytes)
 -----------------------------
@@ -176,16 +202,48 @@ Power-off packet
 
     B2 00 00 00, or a lone 00: the grill is switched off.     [known]
 
-Set temperature and timer command (write to ...fff3)
-----------------------------------------------------
+Control commands (write to ...fff3)
+-----------------------------------
 
-    A1 07 05 <minutes uint16> <temperature uint16>            [unconfirmed]
+The command format depends on the controller type:
 
-From the Particle library, which targets an older smoker with a different
-status layout. Both values are always sent together. Sending it after only
-the hello did nothing on a grill reporting model "C:G:900:1:D". If it follows the <type> <length>
-pattern above, the 07 doesn't match the 5 bytes that follow, so the format
-may differ on this grill. [unconfirmed]
+    A1 ...   older smokers (the Particle library's command)
+    A2 00 00 status request, sent periodically to the oldest controllers
+    A3 ...   meat probe target temperature (format not documented here)
+    A4 ...   controllers that send the B4 status packet (this grill)
+    A5 ...   Wi-Fi setup (above)
+
+A4 command (10 bytes)                                          [unconfirmed]
+
+    00     0xA4
+    01     what is being set
+             bit0  1 = Fahrenheit (always the grill's current unit)
+             bit1  timer
+             bit2  timer counts up (with bit1)
+             bit3  smoker element temperature (05-06)
+             bit4  target (fan) temperature (07-08)
+             bit5  broiler level (09)
+             bit6  smoke-on-demand level (09)
+    02     control
+             bit0  powered on: always the grill's current power state;
+                   clearing it turns the grill off
+             bit1  start/stop the timer
+    03-04  timer minutes, uint16 (count-down timer only)
+    05-06  smoker element temperature, int16
+    07-08  target (fan) temperature, int16
+    09     broiler level (low nibble) or smoke-on-demand level (high nibble)
+
+One setting is sent per command. Examples, grill on and in °F:
+
+    A4 11 01 00 00 00 00 FA 00 00   set the target to 250 °F
+    A4 03 01 9D 01 00 00 00 00 00   set the timer to 413 minutes
+
+A1 command (older smokers)                                     [unconfirmed]
+
+    A1 07 05 <minutes uint16> <temperature uint16>
+
+From the Particle library. It did nothing on a grill reporting model
+"C:G:900:1:D", which uses the A4 command instead.
 """
 
 from __future__ import annotations
@@ -239,8 +297,19 @@ WIFI_ERRORS: dict[int, str] = {
     6: "Firmware update failed",
 }
 
-# Control command header: A1 07 05 <minutes u16 LE> <temp u16 LE>
+# Control command header: A1 07 05 <minutes u16 LE> <temp u16 LE> (older smokers)
 SET_TEMP_TIME_HEADER = bytes([0xA1, 0x07, 0x05])
+
+# A4 control command (controllers that send B4 status packets).
+CONTROL_COMMAND_ID = 0xA4
+CONTROL_COMMAND_LEN = 10
+# Byte 1: what is being set.
+CONTROL_SET_FAHRENHEIT = 0x01
+CONTROL_SET_TIMER = 0x02
+CONTROL_SET_TARGET_TEMP = 0x10
+# Byte 2: control.
+CONTROL_POWER_ON = 0x01
+CONTROL_START_STOP_TIMER = 0x02
 
 # Handshake message types (fff1 writes, fff2 reads).
 HANDSHAKE_HELLO = 0x0E
@@ -305,6 +374,10 @@ class GrillStatus:
     @property
     def heating(self) -> bool:
         return bool(self.operation_flags & 0x20)
+
+    @property
+    def powered_on(self) -> bool:
+        return bool(self.operation_flags & 0x01)
 
     @property
     def target_temp(self) -> int | None:
@@ -458,6 +531,44 @@ def build_set_temp_and_time(temp: int, minutes: int) -> bytes:
     if not 0 <= minutes <= 0xFFFF:
         raise ValueError(f"minutes out of range: {minutes}")
     return SET_TEMP_TIME_HEADER + minutes.to_bytes(2, "little") + temp.to_bytes(2, "little")
+
+
+def _control_command(
+    set_flags: int, fahrenheit: bool, powered_on: bool, control: int = 0
+) -> bytearray:
+    cmd = bytearray(CONTROL_COMMAND_LEN)
+    cmd[0] = CONTROL_COMMAND_ID
+    cmd[1] = set_flags | (CONTROL_SET_FAHRENHEIT if fahrenheit else 0)
+    cmd[2] = control | (CONTROL_POWER_ON if powered_on else 0)
+    return cmd
+
+
+def build_set_target_temp(temp: int, *, fahrenheit: bool, powered_on: bool) -> bytes:
+    """Build the (unconfirmed) A4 command that sets the target temperature.
+
+    temp uses the grill's configured scale. fahrenheit and powered_on must
+    match the grill's current state; a cleared power bit turns it off.
+    """
+    if not -0x8000 <= temp <= 0x7FFF:
+        raise ValueError(f"temperature out of range: {temp}")
+    cmd = _control_command(CONTROL_SET_TARGET_TEMP, fahrenheit, powered_on)
+    cmd[7:9] = temp.to_bytes(2, "little", signed=True)
+    return bytes(cmd)
+
+
+def build_set_timer(
+    minutes: int, *, fahrenheit: bool, powered_on: bool, start_stop: bool = False
+) -> bytes:
+    """Build the (unconfirmed) A4 command that sets a count-down timer.
+
+    start_stop also toggles the timer between running and stopped.
+    """
+    if not 0 <= minutes <= 0xFFFF:
+        raise ValueError(f"minutes out of range: {minutes}")
+    control = CONTROL_START_STOP_TIMER if start_stop else 0
+    cmd = _control_command(CONTROL_SET_TIMER, fahrenheit, powered_on, control)
+    cmd[3:5] = minutes.to_bytes(2, "little")
+    return bytes(cmd)
 
 
 def build_handshake(nonce: bytes) -> bytes:

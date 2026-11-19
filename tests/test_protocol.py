@@ -160,3 +160,28 @@ def test_wifi_status_idle():
     pkt = protocol.parse_packet(bytes.fromhex("B500000000"))
     assert isinstance(pkt, protocol.WifiStatus)
     assert pkt.states == [] and pkt.errors == []
+
+
+def test_set_target_temp_command():
+    cmd = protocol.build_set_target_temp(250, fahrenheit=True, powered_on=True)
+    assert cmd.hex(" ").upper() == "A4 11 01 00 00 00 00 FA 00 00"
+
+
+def test_set_target_temp_command_celsius():
+    cmd = protocol.build_set_target_temp(121, fahrenheit=False, powered_on=True)
+    assert cmd.hex(" ").upper() == "A4 10 01 00 00 00 00 79 00 00"
+
+
+def test_set_timer_command():
+    cmd = protocol.build_set_timer(413, fahrenheit=True, powered_on=True)
+    assert cmd.hex(" ").upper() == "A4 03 01 9D 01 00 00 00 00 00"
+
+
+def test_command_keeps_power_bit_clear_when_off():
+    cmd = protocol.build_set_timer(10, fahrenheit=True, powered_on=False)
+    assert cmd[2] == 0
+
+
+def test_powered_on_flag():
+    assert status("B4292300A2010000A40100000000000000BC029600").powered_on
+    assert not status("B429020048000000E10000000000000000BC029600").powered_on

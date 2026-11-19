@@ -27,7 +27,8 @@ from .protocol import (
     ProbeStatus,
     WifiStatus,
     build_handshake,
-    build_set_temp_and_time,
+    build_set_target_temp,
+    build_set_timer,
     is_handshake_accepted,
     parse_handshake_challenge,
     parse_packet,
@@ -192,21 +193,40 @@ class MasterbuiltGrill:
 
     # -- commands (experimental) ------------------------------------------
 
-    async def set_temp_and_time(self, temp: int, minutes: int) -> None:
-        """Send the set-temperature/timer command. Untested on real hardware."""
-        payload = build_set_temp_and_time(temp, minutes)
+    async def set_target_temp(self, temp: int) -> None:
+        """Set the target temperature (A4 command). Untested on real hardware."""
+        status = self._require_status()
+        await self._send_command(
+            "set target temperature",
+            build_set_target_temp(
+                temp, fahrenheit=status.fahrenheit, powered_on=status.powered_on
+            ),
+        )
+
+    async def set_timer(self, minutes: int) -> None:
+        """Set a count-down timer (A4 command). Untested on real hardware."""
+        status = self._require_status()
+        await self._send_command(
+            "set timer",
+            build_set_timer(
+                minutes, fahrenheit=status.fahrenheit, powered_on=status.powered_on
+            ),
+        )
+
+    def _require_status(self) -> GrillStatus:
+        # Commands carry the grill's unit and power state; sending a guess
+        # could switch the grill off.
+        if self.status is None:
+            raise BleakError("the grill's current state isn't known yet")
+        return self.status
+
+    async def _send_command(self, what: str, payload: bytes) -> None:
         if not self.connected:
             await self.connect()
         assert self._client is not None
         if not self._handshake_done:
             await self._complete_handshake(self._client)
-        _LOGGER.debug(
-            "%s: sending set temp=%s minutes=%s (%s)",
-            self.address,
-            temp,
-            minutes,
-            payload.hex(" ").upper(),
-        )
+        _LOGGER.debug("%s: sending %s (%s)", self.address, what, payload.hex(" ").upper())
         await self._write(self._client, CONTROL_CHAR_UUID, payload)
 
     async def _start_notify(self, client: BleakClient) -> None:

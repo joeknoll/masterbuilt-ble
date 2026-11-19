@@ -1,10 +1,13 @@
 """EXPERIMENTAL controls for target temperature and timer.
 
-The command format comes from particle-iot/ble-gateway-library and has not
-been tested against this packet format. Both entities are disabled by default.
+These send the A4 control command (see protocol.py), which has not yet been
+confirmed on a grill. Both entities are disabled by default, and the number
+platform is not currently loaded (see PLATFORMS in __init__.py).
 """
 
 from __future__ import annotations
+
+from collections.abc import Awaitable
 
 from bleak.exc import BleakError
 
@@ -58,9 +61,9 @@ async def async_setup_entry(
 
 
 class _MasterbuiltNumber(MasterbuiltEntity, NumberEntity):
-    async def _send(self, temp: int, minutes: int) -> None:
+    async def _send(self, command: Awaitable[None]) -> None:
         try:
-            await self.grill.set_temp_and_time(temp, minutes)
+            await command
         except (BleakError, TimeoutError, ValueError) as err:
             raise HomeAssistantError(f"Failed to send command to grill: {err}") from err
 
@@ -90,13 +93,7 @@ class MasterbuiltTargetTemperature(_MasterbuiltNumber):
         return status.target_temp if status else None
 
     async def async_set_native_value(self, value: float) -> None:
-        status = self.grill.status
-        if status is None:
-            raise HomeAssistantError("Grill status not yet known")
-        # Keep any running timer by passing the remaining minutes, as the
-        # reference implementation does.
-        minutes = status.remaining_minutes if status.timer_active else 0
-        await self._send(round(value), minutes)
+        await self._send(self.grill.set_target_temp(round(value)))
 
 
 class MasterbuiltTimer(_MasterbuiltNumber):
@@ -106,7 +103,4 @@ class MasterbuiltTimer(_MasterbuiltNumber):
         return status.set_minutes if status else None
 
     async def async_set_native_value(self, value: float) -> None:
-        status = self.grill.status
-        if status is None or status.target_temp is None:
-            raise HomeAssistantError("Set a target temperature before setting the timer")
-        await self._send(status.target_temp, round(value))
+        await self._send(self.grill.set_timer(round(value)))

@@ -93,12 +93,19 @@ device page if you want them:
 ## Controlling the grill (work in progress)
 
 Setting the target temperature and timer from Home Assistant is a goal, but
-it isn't available yet. A "set temperature and timer" command is documented
-in Particle's
+it isn't available yet.
+
+The command for this kind of controller has now been identified: a 10-byte
+`A4` command written to the grill's settings characteristic (see
+[`protocol.py`](custom_components/masterbuilt_ble/protocol.py)). An older
+`A1` command, documented in Particle's
 [ble-gateway-library](https://github.com/particle-iot/ble-gateway-library/blob/main/src/peripherals/masterbuilt-smoker.cpp)
-for an older Masterbuilt smoker, but it had no effect on the grill this
-integration was tested with. The code for it is kept in the repository and
-the entities will return once a working command is found.
+for an earlier Masterbuilt smoker, had no effect on a Gravity Series grill.
+
+The `A4` command is implemented, but the entities stay switched off until it
+has been tested on a grill that is sending readings over Bluetooth. The
+command carries the grill's current units and power state, so it can only
+be sent once a status packet has arrived.
 
 If you have a grill where control works, or a packet capture of it, please
 [open an issue](https://github.com/joeknoll/masterbuilt-ble/issues).
@@ -188,13 +195,49 @@ welcome.
 
 ### Help decode the protocol
 
-Some fields in the grill's status packet are still unknown. The packet layout
-is documented in [`protocol.py`](custom_components/masterbuilt_ble/protocol.py).
+The full packet layout is documented in
+[`protocol.py`](custom_components/masterbuilt_ble/protocol.py), with each
+field marked as confirmed by captures or not. The status packet (`B4`, 21
+bytes) looks like this:
+
+| Byte | Contents |
+|---|---|
+| 0 | `B4`, the packet type |
+| 1 | Configuration bitmap (below) |
+| 2 | Operation bitmap (below) |
+| 3 | Errors: bit 0 = Err 1 … bit 4 = Err 5 |
+| 4–5 | Grill temperature |
+| 6–7 | Smoker element target temperature (0 without one) |
+| 8–9 | Target temperature |
+| 10 | Broiler level (low 4 bits), smoke-on-demand level (high 4 bits) |
+| 11–12 | Timer minutes remaining |
+| 13–14 | Timer minutes set |
+| 15–16 | Fan intensity, 0–100 % |
+| 17–18 | Maximum settable temperature |
+| 19–20 | Minimum settable temperature |
+
+| Bit | Value | Byte 1: configuration | Byte 2: operation |
+|---|---|---|---|
+| 0 | `01` | °F (clear = °C) | Powered on |
+| 1 | `02` | Timer on | Bluetooth control enabled |
+| 2 | `04` | Timer counts up | Door or lid open |
+| 3 | `08` | Min/max temperatures present | Count-up timer running |
+| 4 | `10` | Has a smoker element | Smoker element on |
+| 5 | `20` | Has a fan (charcoal) | Fan on (heating) |
+| 6 | `40` | Has a broiler | Broiler on |
+| 7 | `80` | Has smoke on demand | Smoke on demand on |
+
+Numbers are little-endian. A Gravity Series grill always reports
+configuration bits 3 and 5 and never bits 2, 4, 6 or 7.
+
 Open questions:
 
-- Status bytes 6–7 and 10.
-- Operation bitmap bit 0.
-- Configuration bits 3 and 5, which are always set in captures so far.
+- Most of the bits above, and bytes 6–7 and 10, come from another
+  implementation and haven't been seen to change in a capture yet. Captures
+  with the lid open, the grill switched off, or a count-up timer would
+  confirm them.
+- Only Err 4 has been seen in a capture. Captures of other errors would
+  confirm the error bits.
 
 To help, enable the raw packet sensors or debug logging, change one thing on
 the grill at a time, and note which bytes change.
