@@ -49,6 +49,7 @@ BINARY_SENSORS: tuple[MasterbuiltBinarySensorEntityDescription, ...] = (
     MasterbuiltBinarySensorEntityDescription(
         key="bluetooth_readings",
         translation_key="bluetooth_readings",
+        entity_category=EntityCategory.DIAGNOSTIC,
         needs_status=False,
         is_on_fn=lambda grill: grill.bluetooth_readings,
     ),

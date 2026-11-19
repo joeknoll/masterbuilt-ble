@@ -13,8 +13,8 @@ Assistant.
 > **The grill only sends readings over Bluetooth while it is not set up on
 > Wi-Fi.** Once a grill has been set up on Wi-Fi, it sends only Wi-Fi
 > status over Bluetooth, and this integration has no temperatures to show.
-> The **Bluetooth readings** sensor tells you which mode the grill is in. See
-> [Only "Connected" has a value](#only-connected-has-a-value).
+> The **Bluetooth readings** diagnostic sensor tells you which mode the grill
+> is in. See [Only "Connected" has a value](#only-connected-has-a-value).
 
 > [!NOTE]
 > This is an unofficial, community project. It is not affiliated with or
