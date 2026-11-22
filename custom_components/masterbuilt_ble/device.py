@@ -75,6 +75,16 @@ _ARM_HELLO_SETTLE = 2.0
 # controller (which accepts only one connection at a time) frees its slot.
 _ARM_SLOT_DELAY = 2.0
 
+# Many controllers send Wi-Fi status (B5) in parallel with readings (B4/B3),
+# not instead of them, so a B5 does not by itself mean readings have stopped.
+# The grill counts as "sending readings" as long as a B4/B3 has arrived within
+# this window; readings come about every 2 s, so this tolerates several misses.
+_READINGS_COEXIST_WINDOW = 15.0
+# How long after connecting to wait for the first reading before concluding a
+# grill that is sending only B5 is really in Wi-Fi-only mode. The first B4
+# typically arrives 1-3 s after the hello, so this leaves a margin.
+_READINGS_GRACE = 6.0
+
 
 class MasterbuiltGrill:
     """Keeps a live notification connection to one grill and holds its state."""
@@ -104,6 +114,12 @@ class MasterbuiltGrill:
         self._latch_attempted = False
         # When set, connect() runs the arming sub-connection before connecting.
         self._arm_before_connect = False
+        # Per-connection readings bookkeeping, reset on each connect(): when the
+        # connection opened, when a reading (B4/B3) last arrived, and whether the
+        # "Wi-Fi-only" warning has already been logged for this connection.
+        self._connect_monotonic: float | None = None
+        self._last_readings_monotonic: float | None = None
+        self._wifi_only_logged = False
 
     # -- state / listeners -------------------------------------------------
 
@@ -190,7 +206,11 @@ class MasterbuiltGrill:
 
             self._client = client
             self._assembler = PacketAssembler()
-            self.last_packet_monotonic = time.monotonic()
+            now = time.monotonic()
+            self.last_packet_monotonic = now
+            self._connect_monotonic = now
+            self._last_readings_monotonic = None
+            self._wifi_only_logged = False
             _LOGGER.info("%s: connected", self.address)
             self._notify_listeners()
 
@@ -295,28 +315,52 @@ class MasterbuiltGrill:
                 self.powered_off = False
                 self.bluetooth_readings = True
                 self._b4_seen = True
+                self._last_readings_monotonic = time.monotonic()
             elif isinstance(packet, ProbeStatus):
                 self.probes = packet
                 self.bluetooth_readings = True
                 self._b4_seen = True
+                self._last_readings_monotonic = time.monotonic()
             elif isinstance(packet, WifiStatus):
-                if self.bluetooth_readings is not False:
-                    _LOGGER.warning(
-                        "%s: the grill is in Wi-Fi mode and is not sending readings "
-                        "over Bluetooth (Wi-Fi state: %s)",
-                        self.address,
-                        ", ".join(packet.states) or "not connected",
-                    )
+                # B5 (Wi-Fi status) is sent in parallel with readings on many
+                # controllers, so it does not by itself mean readings have
+                # stopped. Keep it as supplementary status while B4/B3 are still
+                # arriving; only treat the grill as Wi-Fi-only once they stop.
                 self.wifi_status = packet
-                self.bluetooth_readings = False
-                # Earlier readings are no longer updated; don't show them as live.
-                self.status = None
-                self.probes = None
+                if self._in_wifi_only_mode():
+                    if not self._wifi_only_logged:
+                        self._wifi_only_logged = True
+                        _LOGGER.warning(
+                            "%s: the grill is not sending readings over Bluetooth, "
+                            "only Wi-Fi status (Wi-Fi state: %s)",
+                            self.address,
+                            ", ".join(packet.states) or "not connected",
+                        )
+                    self.bluetooth_readings = False
+                    # Earlier readings are no longer updated; don't show them as live.
+                    self.status = None
+                    self.probes = None
             elif isinstance(packet, PowerOff):
                 self.powered_off = True
             else:
                 self.last_unknown_packet = packet_bytes
         self._notify_listeners()
+
+    def _in_wifi_only_mode(self) -> bool:
+        """True when the grill is sending Wi-Fi status but no readings.
+
+        Readings (B4/B3) and Wi-Fi status (B5) often arrive together, so a B5
+        is only taken to mean "no readings" once B4/B3 have stopped: either a
+        reading arrived earlier this connection and the coexist window has
+        lapsed, or none has arrived within the grace period after connecting.
+        """
+        now = time.monotonic()
+        if self._last_readings_monotonic is not None:
+            return now - self._last_readings_monotonic >= _READINGS_COEXIST_WINDOW
+        return (
+            self._connect_monotonic is not None
+            and now - self._connect_monotonic >= _READINGS_GRACE
+        )
 
     # -- commands (experimental) ------------------------------------------
 
