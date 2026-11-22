@@ -197,8 +197,8 @@ welcome.
 
 The full packet layout is documented in
 [`protocol.py`](custom_components/masterbuilt_ble/protocol.py), with each
-field marked as confirmed by captures or not. The status packet (`B4`, 21
-bytes) looks like this:
+field marked as confirmed or not. The status packet (`B4`, 21 bytes) looks
+like this:
 
 | Byte | Contents |
 |---|---|
@@ -210,8 +210,8 @@ bytes) looks like this:
 | 6–7 | Smoker element target temperature (0 without one) |
 | 8–9 | Target temperature |
 | 10 | Broiler level (low 4 bits), smoke-on-demand level (high 4 bits) |
-| 11–12 | Timer minutes remaining |
-| 13–14 | Timer minutes set |
+| 11–12 | Timer minutes remaining (elapsed when counting up) |
+| 13–14 | Timer minutes set (0 when counting up) |
 | 15–16 | Fan intensity, 0–100 % |
 | 17–18 | Maximum settable temperature |
 | 19–20 | Minimum settable temperature |
@@ -228,16 +228,21 @@ bytes) looks like this:
 | 7 | `80` | Has smoke on demand | Smoke on demand on |
 
 Numbers are little-endian. A Gravity Series grill always reports
-configuration bits 3 and 5 and never bits 2, 4, 6 or 7.
+configuration bits 3 and 5, never configuration bits 4, 6 or 7, and never
+operation bits 2, 4, 6 or 7, so it doesn't report the lid state. It sends 0
+in bytes 6–7 and 10, and sends temperatures as whole numbers: it keeps them
+in °F and, when set to °C, sends (°F − 32) × 5 / 9 rounded toward zero.
+Err 2 (meat probe malfunction) is set when any probe reports a fault.
 
 Open questions:
 
-- Most of the bits above, and bytes 6–7 and 10, come from another
-  implementation and haven't been seen to change in a capture yet. Captures
-  with the lid open, the grill switched off, or a count-up timer would
-  confirm them.
+- The smoker element, broiler and smoke-on-demand fields haven't been seen
+  in a capture; captures from grills that have them would confirm them.
+- What operation bit 1 means, and whether operation bit 0 is the power
+  state. Captures with the grill switched off or a count-up timer would
+  help.
 - Only Err 4 has been seen in a capture. Captures of other errors would
-  confirm the error bits.
+  confirm them.
 
 To help, enable the raw packet sensors or debug logging, change one thing on
 the grill at a time, and note which bytes change.

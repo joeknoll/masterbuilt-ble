@@ -4,11 +4,12 @@ This module has no Home Assistant or Bleak dependencies so it can be unit
 tested on its own.
 
 Everything below was reverse engineered from Bluetooth captures of a Gravity
-Series-style controller, plus the GATT layout published in
-particle-iot/ble-gateway-library (masterbuilt-smoker.cpp) and other
-implementations of the same protocol. Each field is tagged:
+Series-style controller and from the controller's own firmware, plus the
+GATT layout published in particle-iot/ble-gateway-library
+(masterbuilt-smoker.cpp) and other implementations of the same protocol.
+Each field is tagged:
 
-    [known]       matches every capture so far
+    [known]       confirmed by the controller's firmware or every capture
     [assumed]     consistent with captures, but only partly observed
     [unconfirmed] taken from another source and not yet seen to work here
     [unknown]     meaning not worked out yet
@@ -144,38 +145,42 @@ Status packet (0xB4, 21 bytes)
            controller has
              bit0  1 = Fahrenheit, 0 = Celsius                [known]
              bit1  timer on                                   [known]
-             bit2  timer counts up instead of down            [unconfirmed]
+             bit2  timer counts up instead of down            [assumed]
              bit3  min/max temperatures present (17-20)       [assumed]
              bit4  has an electric smoker element (06-07)     [unconfirmed]
              bit5  has a fan / charcoal heat source           [assumed]
                    (08-09, 15-16)
              bit6  has a broiler (byte 10, low nibble)        [unconfirmed]
              bit7  has smoke on demand (byte 10, high nibble) [unconfirmed]
-           A Gravity Series grill reports bits 3 and 5 always set, and
-           bits 2, 4, 6 and 7 never set. [known]
+           A Gravity Series grill always reports bits 3 and 5 set and
+           bits 4, 6 and 7 clear. [known]
     02     operation bitmap
              bit0  powered on                                 [assumed]
              bit1  Bluetooth control enabled                  [unconfirmed]
              bit2  door / lid open                            [unconfirmed]
-             bit3  count-up timer running                     [unconfirmed]
+             bit3  count-up timer running                     [assumed]
              bit4  smoker element on                          [unconfirmed]
              bit5  fan on (heating)                           [known]
              bit6  broiler on                                 [unconfirmed]
              bit7  smoke on demand on                         [unconfirmed]
-    03     error bitmap, bit n = Err n+1 (Err 1-5)            [assumed]
-             Only 0x08 (Err 4, charcoal failed to ignite) has been seen.
-             The byte can also be read as four 2-bit fields (bits 0-1,
-             2-3, 4-5, 6-7), each 0-3; for a single error that gives the
-             same bit, so the two readings agree on every capture.
+           A Gravity Series grill never sets bits 2, 4, 6 or 7, so it
+           doesn't report the lid state. [known]
+    03     error bitmap: one flag per error, bit n = Err n+1
+           (Err 1-5)                                          [known]
+             Err 2 (meat probe malfunction) is set when any probe
+             reports a fault. Err 4 (0x08, charcoal failed to ignite)
+             has been seen in a capture.
     04-05  cavity (grill) temperature                         [known]
     06-07  smoker element target temperature; 0 on a grill
            without one                                        [unconfirmed]
     08-09  target (fan) temperature                           [known]
-             0 in °F / -17 in °C (0 °F converted) = no target.[unknown]
+             0 in °F / -17 in °C (0 °F converted) = no target.[assumed]
     10     low nibble broiler level, high nibble smoke-on-
            demand level; 0 on a grill without them            [unconfirmed]
-    11-12  remaining timer minutes, uint16                    [known]
-    13-14  set timer minutes, uint16                          [known]
+           A Gravity Series grill sends 0 in 06-07 and 10. [known]
+    11-12  timer minutes remaining (elapsed when counting up),
+           uint16                                             [known]
+    13-14  timer minutes set, uint16; 0 when counting up      [known]
     15-16  fan intensity, uint16, 0-100 %                     [known]
              100 while heating up in most captures.
     17-18  maximum settable temperature                       [known]
@@ -183,10 +188,11 @@ Status packet (0xB4, 21 bytes)
     19-20  minimum settable temperature                       [known]
              150 °F / 65 °C in captures.
 
-The temperatures (04-09, 17-20) may be IEEE 11073 16-bit SFLOATs (4-bit
-signed exponent, 12-bit signed mantissa) rather than int16. [unconfirmed]
-Every value captured so far has an exponent of 0, where the two encodings
-are the same for -2048..2047; they are read as int16 here.
+Temperatures (04-09, 17-20) are read as int16. A Gravity Series controller
+sends plain integers: it keeps temperatures in °F and, when set to
+Celsius, sends (F - 32) x 5 / 9 rounded toward zero. [known] Other
+implementations treat these fields as IEEE 11073 16-bit SFLOATs; for the
+values seen so far (exponent 0) the two encodings are the same.
 
 Probe packet (0xB3, 18 bytes)
 -----------------------------

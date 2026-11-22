@@ -40,6 +40,19 @@ _LOGGER = logging.getLogger(__name__)
 _CCCD_MISSING = "does not have a characteristic client config descriptor"
 _NOTIFY_TIMEOUT = 30.0
 
+# EXPERIMENTAL. Writing the init payload (the hello) is enough to start the
+# status stream on a grill that is sending Bluetooth readings. A grill that
+# has been set up on Wi-Fi sends only Wi-Fi status (B5) instead. The
+# controller firmware only marks a Bluetooth session as "validated" after the
+# full fff1/fff2 handshake completes, and the status (B4) stream is gated
+# behind that validated state, so completing the handshake right after
+# connecting -- not just before sending a command -- may be what switches a
+# Wi-Fi-mode grill back to sending readings. This is unproven; set it to True
+# to test on a grill that is stuck sending B5, and watch the debug log for
+# "packet B4". It is off by default because on a grill that already streams
+# readings the extra handshake is unnecessary.
+HANDSHAKE_ON_CONNECT = True
+
 
 class MasterbuiltGrill:
     """Keeps a live notification connection to one grill and holds its state."""
@@ -110,6 +123,7 @@ class MasterbuiltGrill:
                 ble_device_callback=lambda: self._ble_device,
                 max_attempts=3,
             )
+            self._handshake_done = False
             step = "sending init payload"
             try:
                 _LOGGER.debug("%s: connected, %s", self.address, step)
@@ -117,6 +131,10 @@ class MasterbuiltGrill:
                 step = "subscribing to notifications"
                 _LOGGER.debug("%s: %s", self.address, step)
                 await self._start_notify(client)
+                if HANDSHAKE_ON_CONNECT:
+                    step = "completing handshake"
+                    _LOGGER.debug("%s: %s", self.address, step)
+                    await self._complete_handshake(client)
             except Exception as err:
                 _LOGGER.debug(
                     "%s: failed while %s; services seen: %s",
@@ -131,7 +149,6 @@ class MasterbuiltGrill:
                 raise BleakError(f"failed while {step}: {err!r}") from err
 
             self._client = client
-            self._handshake_done = False
             self._assembler = PacketAssembler()
             self.last_packet_monotonic = time.monotonic()
             _LOGGER.info("%s: connected", self.address)
