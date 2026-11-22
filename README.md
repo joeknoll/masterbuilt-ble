@@ -136,10 +136,20 @@ Bluetooth. The **Bluetooth readings** sensor turns off, and the other
 entities show as unavailable. The grill sends Wi-Fi status packets
 instead, which look like `packet B5 1E 00 00 00` in the debug log.
 
-To get readings over Bluetooth again, the grill's saved Wi-Fi network has to
-be cleared. Check your grill's manual or ask Masterbuilt support how to do
-this for your controller. Making the saved network unreachable, for example
-by blocking the grill on your router, is not enough.
+When this happens, the integration automatically makes a one-time attempt to
+switch the grill back to sending readings: it briefly reconnects to complete a
+handshake the controller requires before it will stream readings again. This
+runs once per connection session; if it succeeds the **Bluetooth readings**
+sensor turns on and the readings entities come back, and the change persists so
+later connections work straight away. Watch the debug log for
+`attempting the one-time latch to enable Bluetooth readings` followed by
+`packet B4 ...`.
+
+If it does not help (for example the grill is actively connected to Wi-Fi and
+the cloud), clearing the grill's saved Wi-Fi network also restores Bluetooth
+readings. Check your grill's manual or ask Masterbuilt support how to do this
+for your controller. Making the saved network unreachable, for example by
+blocking the grill on your router, is not enough.
 
 The Wi-Fi status packet is 5 bytes:
 

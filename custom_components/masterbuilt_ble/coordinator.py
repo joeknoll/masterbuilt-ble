@@ -107,6 +107,16 @@ class MasterbuiltCoordinator:
     async def _async_watchdog(self, _now: datetime) -> None:
         grill = self.grill
         if grill.connected:
+            if grill.needs_b4_enable:
+                # The grill is sending Wi-Fi status instead of readings; try the
+                # one-time latch that switches it back to B4/B3 over Bluetooth.
+                try:
+                    await grill.async_enable_b4()
+                except Exception as err:  # noqa: BLE001 - best effort, logged
+                    _LOGGER.debug(
+                        "%s: enabling Bluetooth readings (B4) failed: %r", grill.address, err
+                    )
+                return
             last = grill.last_packet_monotonic
             if last is not None and time.monotonic() - last > STALE_DATA_SECONDS:
                 _LOGGER.debug("%s: no data for %ss, reconnecting", grill.address, STALE_DATA_SECONDS)
