@@ -41,49 +41,28 @@ _LOGGER = logging.getLogger(__name__)
 _CCCD_MISSING = "does not have a characteristic client config descriptor"
 _NOTIFY_TIMEOUT = 30.0
 
-# EXPERIMENTAL. Writing the init payload (the hello) is enough to start the
-# status stream on a grill that is sending Bluetooth readings. A grill that
-# has been set up on Wi-Fi sends only Wi-Fi status (B5) instead. The
-# controller firmware only marks a Bluetooth session as "validated" after the
-# full fff1/fff2 handshake completes, and the status (B4) stream is gated
-# behind that validated state, so completing the handshake right after
-# connecting -- not just before sending a command -- may be what switches a
-# Wi-Fi-mode grill back to sending readings. This is unproven; set it to True
-# to test on a grill that is stuck sending B5, and watch the debug log for
-# "packet B4". It is off by default because on a grill that already streams
-# readings the extra handshake is unnecessary.
-HANDSHAKE_ON_CONNECT = True
+# The controller streams readings (B4 status, B3 probes) only while its
+# "Bluetooth readings" flag is set; otherwise it sends only Wi-Fi status (B5).
+# The flag is saved on the controller, so once set it stays set. To set it:
+# write the hello (the controller marks the session validated), disconnect
+# while the session is still validated, then reconnect. The first notification
+# on the new connection sets the flag and readings start.
+#
+# Reading the challenge on fff2 while the flag is clear un-validates the
+# session, so connecting never touches fff2; the full handshake is done only
+# before sending a command.
+
+# Seconds to wait after the hello for the first reading (B4 or B3) before
+# concluding the grill is sending only Wi-Fi status. Readings normally arrive
+# 2-5 s after the hello.
+_READINGS_WAIT = 8.0
+# Seconds between dropping a connection and reconnecting, so the controller,
+# which accepts one connection at a time, frees its slot.
+_RECONNECT_DELAY = 2.0
 
 # Seconds to wait after the hello before reading the challenge from fff2. The
 # grill computes it asynchronously; the official app waits about a second.
 _HANDSHAKE_CHALLENGE_DELAY = 1.2
-
-# One-time "connect latch" used to switch a grill that only sends Wi-Fi status
-# (B5) back to sending readings (B4/B3). The controller gates the readings
-# stream behind a persistent "connect" flag that is only latched after a
-# specific BLE sequence: write the hello (which sets the controller's handshake
-# flag), DISCONNECT while that flag is still set (this arms the latch), then
-# reconnect so the grill's own status notifications complete the latch. Once
-# latched the flag is saved to the controller's NVS, so readings work on every
-# later connection. See the project notes on the controller firmware.
-#
-# Seconds to stay connected after the arming hello before disconnecting. Must be
-# comfortably under the controller's handshake-flag timeout (~60 s) while giving
-# the write time to be processed.
-_ARM_HELLO_SETTLE = 2.0
-# Seconds to wait between dropping one connection and opening the next, so the
-# controller (which accepts only one connection at a time) frees its slot.
-_ARM_SLOT_DELAY = 2.0
-
-# Many controllers send Wi-Fi status (B5) in parallel with readings (B4/B3),
-# not instead of them, so a B5 does not by itself mean readings have stopped.
-# The grill counts as "sending readings" as long as a B4/B3 has arrived within
-# this window; readings come about every 2 s, so this tolerates several misses.
-_READINGS_COEXIST_WINDOW = 15.0
-# How long after connecting to wait for the first reading before concluding a
-# grill that is sending only B5 is really in Wi-Fi-only mode. The first B4
-# typically arrives 1-3 s after the hello, so this leaves a margin.
-_READINGS_GRACE = 6.0
 
 
 class MasterbuiltGrill:
@@ -98,8 +77,8 @@ class MasterbuiltGrill:
         self.last_packet_monotonic: float | None = None
         self.last_unknown_packet: bytes | None = None
         self.wifi_status: WifiStatus | None = None
-        # True while the grill sends readings over Bluetooth, False once it
-        # sends Wi-Fi status packets instead, None until the first packet.
+        # True while the grill sends readings over Bluetooth, False when it
+        # sends only Wi-Fi status, None until the first packet.
         self.bluetooth_readings: bool | None = None
 
         self._ble_device: BLEDevice | None = None
@@ -108,18 +87,12 @@ class MasterbuiltGrill:
         self._handshake_done = False
         self._assembler = PacketAssembler()
         self._listeners: list[Callable[[], None]] = []
-        # One-time B4-enable latch (see _ARM_* constants). True once a B4/B3
-        # readings packet has ever arrived; True once the latch has been tried.
-        self._b4_seen = False
-        self._latch_attempted = False
-        # When set, connect() runs the arming sub-connection before connecting.
-        self._arm_before_connect = False
-        # Per-connection readings bookkeeping, reset on each connect(): when the
-        # connection opened, when a reading (B4/B3) last arrived, and whether the
-        # "Wi-Fi-only" warning has already been logged for this connection.
-        self._connect_monotonic: float | None = None
-        self._last_readings_monotonic: float | None = None
-        self._wifi_only_logged = False
+        # Set when a reading (B4/B3) arrives on the current connection.
+        self._readings_event = asyncio.Event()
+        # True after a reconnect to switch on readings didn't work, so a grill
+        # that can't stream readings (for example one on the cloud) isn't
+        # reconnected every time. Cleared when readings arrive.
+        self._readings_switch_failed = False
 
     # -- state / listeners -------------------------------------------------
 
@@ -151,144 +124,100 @@ class MasterbuiltGrill:
     # -- connection --------------------------------------------------------
 
     async def connect(self) -> None:
-        """Connect, send the init payload, and subscribe to notifications."""
+        """Connect, make sure the grill is sending readings, and listen."""
         async with self._connect_lock:
             if self.connected:
                 return
             if self._ble_device is None:
                 raise BleakError(f"{self.address} has not been seen by any Bluetooth adapter")
 
-            if self._arm_before_connect:
-                self._arm_before_connect = False
+            client = await self._open_session()
+            got_readings = await self._wait_for_readings()
+
+            if not got_readings and client.is_connected and not self._readings_switch_failed:
+                # Only Wi-Fi status so far. The hello has validated this
+                # session, so disconnecting now and reconnecting sets the
+                # controller's readings flag.
                 _LOGGER.info(
-                    "%s: arming the Bluetooth-readings (B4) latch before connecting",
+                    "%s: grill is sending only Wi-Fi status; reconnecting to "
+                    "switch on Bluetooth readings",
                     self.address,
                 )
-                await self._arm_connect_latch()
-                await asyncio.sleep(_ARM_SLOT_DELAY)
+                await self._disconnect_client(client)
+                await asyncio.sleep(_RECONNECT_DELAY)
+                client = await self._open_session()
+                got_readings = await self._wait_for_readings()
+                self._readings_switch_failed = not got_readings
 
-            _LOGGER.debug("%s: connecting", self.address)
-            client = await establish_connection(
-                BleakClientWithServiceCache,
-                self._ble_device,
-                self.name,
-                disconnected_callback=self._handle_disconnect,
-                ble_device_callback=lambda: self._ble_device,
-                max_attempts=3,
-            )
-            self._handshake_done = False
-            step = "sending hello"
-            try:
-                # The hello's nonce is derived from the grill's MAC; the
-                # controller validates it and starts the readings session.
-                hello = build_hello(mac_to_bytes(self.address))
-                _LOGGER.debug("%s: connected, %s", self.address, step)
-                await self._write(client, START_CHAR_UUID, hello)
-                step = "subscribing to notifications"
-                _LOGGER.debug("%s: %s", self.address, step)
-                await self._start_notify(client)
-                if HANDSHAKE_ON_CONNECT:
-                    step = "completing handshake"
-                    _LOGGER.debug("%s: %s", self.address, step)
-                    await self._complete_handshake(client)
-            except Exception as err:
-                _LOGGER.debug(
-                    "%s: failed while %s; services seen: %s",
+            if not client.is_connected:
+                raise BleakError("disconnected while setting up the connection")
+
+            if not got_readings:
+                _LOGGER.warning(
+                    "%s: the grill is sending only Wi-Fi status over Bluetooth, not "
+                    "readings (Wi-Fi state: %s)",
                     self.address,
-                    step,
-                    self._describe_services(client),
+                    ", ".join(self.wifi_status.states) if self.wifi_status else "unknown",
                 )
-                try:
-                    await client.disconnect()
-                except BleakError:
-                    pass
-                raise BleakError(f"failed while {step}: {err!r}") from err
-
             self._client = client
-            self._assembler = PacketAssembler()
-            now = time.monotonic()
-            self.last_packet_monotonic = now
-            self._connect_monotonic = now
-            self._last_readings_monotonic = None
-            self._wifi_only_logged = False
+            self.last_packet_monotonic = time.monotonic()
             _LOGGER.info("%s: connected", self.address)
             self._notify_listeners()
 
-    @property
-    def needs_b4_enable(self) -> bool:
-        """True when the grill only sends Wi-Fi status (B5) and the one-time
-        latch to switch it back to readings (B4/B3) has not been tried yet."""
-        return (
-            self.bluetooth_readings is False
-            and not self._b4_seen
-            and not self._latch_attempted
-        )
-
-    async def async_enable_b4(self) -> None:
-        """Try once to switch a Wi-Fi-mode grill back to sending B4/B3 readings.
-
-        A grill set up on Wi-Fi sends only Wi-Fi status over Bluetooth until the
-        controller's persistent "connect" flag is latched (see the _ARM_*
-        constants). This performs that latch: drop the current link, open a
-        brief link that writes the hello and disconnects (arming the latch),
-        then reconnect normally so the grill's status notifications complete it.
-
-        Guarded to run at most once per session; it drops the connection, so
-        re-running would needlessly interrupt readings. Reload the integration
-        to try again.
-        """
-        if self._latch_attempted or self._b4_seen:
-            return
-        self._latch_attempted = True
-        self._arm_before_connect = True
-        _LOGGER.info(
-            "%s: grill is sending Wi-Fi status only; attempting the one-time "
-            "latch to enable Bluetooth readings (B4)",
-            self.address,
-        )
-        await self.disconnect()
-        await asyncio.sleep(_ARM_SLOT_DELAY)
-        await self.connect()
-
-    async def _arm_connect_latch(self) -> None:
-        """Arm the controller's connect latch: a brief link that writes the
-        hello then disconnects.
-
-        Writing the hello sets the controller's handshake flag; disconnecting
-        while it is still set is what arms the latch. The reconnect in connect()
-        then lets the grill's own status notifications complete the latch. We do
-        NOT read fff2 (the challenge) here: that can clear the handshake flag
-        before we disconnect, which would leave the latch unarmed.
-        """
-        if self._ble_device is None:
-            raise BleakError(f"{self.address} has not been seen by any Bluetooth adapter")
+    async def _open_session(self) -> BleakClient:
+        """Open a connection, write the hello and subscribe to notifications."""
+        assert self._ble_device is not None
+        _LOGGER.debug("%s: connecting", self.address)
         client = await establish_connection(
             BleakClientWithServiceCache,
             self._ble_device,
             self.name,
+            disconnected_callback=self._handle_disconnect,
             ble_device_callback=lambda: self._ble_device,
             max_attempts=3,
         )
+        self._handshake_done = False
+        self._assembler = PacketAssembler()
+        self._readings_event.clear()
+        step = "sending hello"
         try:
+            # The hello's nonce is derived from the grill's MAC; the
+            # controller validates it and starts the session.
             hello = build_hello(mac_to_bytes(self.address))
-            _LOGGER.debug("%s: arming latch, writing hello", self.address)
+            _LOGGER.debug("%s: connected, %s", self.address, step)
             await self._write(client, START_CHAR_UUID, hello)
-            # Stay connected briefly so the controller validates the hello, then
-            # disconnect while its handshake flag is still set.
-            await asyncio.sleep(_ARM_HELLO_SETTLE)
-        finally:
-            try:
-                await client.disconnect()
-            except BleakError:
-                pass
+            step = "subscribing to notifications"
+            _LOGGER.debug("%s: %s", self.address, step)
+            await self._start_notify(client)
+        except Exception as err:
+            _LOGGER.debug(
+                "%s: failed while %s; services seen: %s",
+                self.address,
+                step,
+                self._describe_services(client),
+            )
+            await self._disconnect_client(client)
+            raise BleakError(f"failed while {step}: {err!r}") from err
+        return client
+
+    async def _wait_for_readings(self) -> bool:
+        """Wait for the first reading (B4/B3) on the current connection."""
+        try:
+            await asyncio.wait_for(self._readings_event.wait(), _READINGS_WAIT)
+        except TimeoutError:
+            return False
+        return True
+
+    async def _disconnect_client(self, client: BleakClient) -> None:
+        try:
+            await client.disconnect()
+        except BleakError as err:
+            _LOGGER.debug("%s: error while disconnecting: %s", self.address, err)
 
     async def disconnect(self) -> None:
         client, self._client = self._client, None
         if client is not None:
-            try:
-                await client.disconnect()
-            except BleakError as err:
-                _LOGGER.debug("%s: error while disconnecting: %s", self.address, err)
+            await self._disconnect_client(client)
         self._notify_listeners()
 
     def _handle_disconnect(self, client: BleakClient) -> None:
@@ -313,31 +242,17 @@ class MasterbuiltGrill:
             if isinstance(packet, GrillStatus):
                 self.status = packet
                 self.powered_off = False
-                self.bluetooth_readings = True
-                self._b4_seen = True
-                self._last_readings_monotonic = time.monotonic()
+                self._got_reading()
             elif isinstance(packet, ProbeStatus):
                 self.probes = packet
-                self.bluetooth_readings = True
-                self._b4_seen = True
-                self._last_readings_monotonic = time.monotonic()
+                self._got_reading()
             elif isinstance(packet, WifiStatus):
-                # B5 (Wi-Fi status) is sent in parallel with readings on many
-                # controllers, so it does not by itself mean readings have
-                # stopped. Keep it as supplementary status while B4/B3 are still
-                # arriving; only treat the grill as Wi-Fi-only once they stop.
+                # Wi-Fi status also arrives alongside readings. Only when no
+                # reading has come on this connection is the grill sending
+                # Wi-Fi status alone, so earlier readings aren't live.
                 self.wifi_status = packet
-                if self._in_wifi_only_mode():
-                    if not self._wifi_only_logged:
-                        self._wifi_only_logged = True
-                        _LOGGER.warning(
-                            "%s: the grill is not sending readings over Bluetooth, "
-                            "only Wi-Fi status (Wi-Fi state: %s)",
-                            self.address,
-                            ", ".join(packet.states) or "not connected",
-                        )
+                if not self._readings_event.is_set():
                     self.bluetooth_readings = False
-                    # Earlier readings are no longer updated; don't show them as live.
                     self.status = None
                     self.probes = None
             elif isinstance(packet, PowerOff):
@@ -346,21 +261,10 @@ class MasterbuiltGrill:
                 self.last_unknown_packet = packet_bytes
         self._notify_listeners()
 
-    def _in_wifi_only_mode(self) -> bool:
-        """True when the grill is sending Wi-Fi status but no readings.
-
-        Readings (B4/B3) and Wi-Fi status (B5) often arrive together, so a B5
-        is only taken to mean "no readings" once B4/B3 have stopped: either a
-        reading arrived earlier this connection and the coexist window has
-        lapsed, or none has arrived within the grace period after connecting.
-        """
-        now = time.monotonic()
-        if self._last_readings_monotonic is not None:
-            return now - self._last_readings_monotonic >= _READINGS_COEXIST_WINDOW
-        return (
-            self._connect_monotonic is not None
-            and now - self._connect_monotonic >= _READINGS_GRACE
-        )
+    def _got_reading(self) -> None:
+        self.bluetooth_readings = True
+        self._readings_switch_failed = False
+        self._readings_event.set()
 
     # -- commands (experimental) ------------------------------------------
 
