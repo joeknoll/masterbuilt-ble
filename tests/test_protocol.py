@@ -129,9 +129,20 @@ def test_handshake_from_app_capture():
     assert not protocol.is_handshake_accepted(bytes.fromhex("0A08CDBDB2CB9CE424AB"))
 
 
-def test_init_payload_is_a_handshake_hello():
-    init = bytes([0x0E, 0x08, 0x0E, 0x1C, 0x9B, 0x02, 0x7E, 0x09, 0xBA, 0x3B])
-    assert protocol.build_handshake(init[2:]) == init
+def test_build_hello_matches_app_on_validated_bytes():
+    # From a capture of the official app talking to grill D8:BC:38:59:20:A6.
+    mac = protocol.mac_to_bytes("D8:BC:38:59:20:A6")
+    app_hello = bytes.fromhex("0E088FF56A77A4BD040D")
+    hello = protocol.build_hello(mac)
+    # The derived hello reproduces the app's nonce on every byte the
+    # controller validates; the unchecked bytes are left zero.
+    for index in protocol.HELLO_NONCE_MAC_MAP:
+        assert hello[2 + index] == app_hello[2 + index]
+    assert hello == bytes.fromhex("0E0800006A77A4BD000D")
+
+
+def test_mac_to_bytes():
+    assert protocol.mac_to_bytes("D8:BC:38:59:20:A6") == bytes.fromhex("D8BC385920A6")
 
 
 def test_wifi_status_connected():

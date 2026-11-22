@@ -66,10 +66,12 @@ from the app: [known]
     write fff1  0E 08 <challenge>          the challenge echoed back as-is
     read  fff2  0B 00 00                   accepted (presumably)
 
-The nonce is the grill's MAC address XORed with a pairing code kept per
-grill. [unconfirmed] INIT_PAYLOAD (from the Particle library) is a hello
-with a fixed nonce, and is enough to start the status stream. Whether the
-full handshake is needed for commands: [unknown]
+The controller validates the hello nonce against its own MAC: five of the
+eight nonce bytes must equal a MAC byte XORed with a fixed code (build_hello
+derives them; the rest are not checked). An accepted hello starts the
+status stream. [known] The challenge equals the nonce XORed with
+(0x4842 + MAC), and the client echoes it back verbatim. Whether the full
+challenge echo is needed in addition to the hello: [unknown]
 
     write fff1  0F 00 00    sent before the app disconnects. Session end or
                             reset (likely). [unknown]
@@ -582,6 +584,40 @@ def build_handshake(nonce: bytes) -> bytes:
     if len(nonce) != HANDSHAKE_NONCE_LEN:
         raise ValueError(f"nonce must be {HANDSHAKE_NONCE_LEN} bytes, got {len(nonce)}")
     return bytes([HANDSHAKE_HELLO, HANDSHAKE_NONCE_LEN]) + nonce
+
+
+# The controller validates the hello nonce against its own MAC: five of the
+# eight nonce bytes must equal a MAC byte XOR a fixed code (the other three are
+# not checked). Deriving the nonce from the grill's MAC produces a hello the
+# controller accepts, which starts the readings session and enables B4/B3.
+# Confirmed against the controller firmware and a capture of the official app.
+#   nonce index -> (MAC index, XOR code)
+HELLO_NONCE_MAC_MAP: dict[int, tuple[int, int]] = {
+    2: (0, 0xB2),
+    3: (1, 0xCB),
+    4: (2, 0x9C),
+    5: (3, 0xE4),
+    7: (5, 0xAB),
+}
+
+
+def build_hello(mac: bytes) -> bytes:
+    """Build the hello (0E 08 <8 bytes>) for a grill with the given MAC.
+
+    The nonce is derived from the MAC so the controller accepts it; nonce
+    bytes it doesn't check are left zero.
+    """
+    if len(mac) != 6:
+        raise ValueError(f"mac must be 6 bytes, got {len(mac)}")
+    nonce = bytearray(HANDSHAKE_NONCE_LEN)
+    for index, (mac_index, code) in HELLO_NONCE_MAC_MAP.items():
+        nonce[index] = mac[mac_index] ^ code
+    return build_handshake(bytes(nonce))
+
+
+def mac_to_bytes(address: str) -> bytes:
+    """Parse a BLE address string like 'D8:BC:38:59:20:A6' into 6 bytes."""
+    return bytes.fromhex(address.replace(":", ""))
 
 
 def parse_handshake_challenge(data: bytes) -> bytes | None:

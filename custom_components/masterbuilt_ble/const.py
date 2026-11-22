@@ -20,9 +20,8 @@ CONTROL_CHAR_UUID: Final = "426f7567-6854-6563-2d57-65694c69fff3"
 # Status / probe notifications.
 NOTIFY_CHAR_UUID: Final = "426f7567-6854-6563-2d57-65694c69fff4"
 
-INIT_PAYLOAD: Final = bytes(
-    [0x0E, 0x08, 0x0E, 0x1C, 0x9B, 0x02, 0x7E, 0x09, 0xBA, 0x3B]
-)
+# The hello the client writes once right after connecting is built per grill
+# from its MAC (see protocol.build_hello), so there is no fixed payload here.
 
 # --- Advertisement (discovery) ---------------------------------------------
 # What the grill broadcasts before any connection. It does NOT advertise the

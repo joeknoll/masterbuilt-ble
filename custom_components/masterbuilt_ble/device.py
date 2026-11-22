@@ -16,7 +16,6 @@ from bleak_retry_connector import BleakClientWithServiceCache, establish_connect
 from .const import (
     AUTH_CHAR_UUID,
     CONTROL_CHAR_UUID,
-    INIT_PAYLOAD,
     NOTIFY_CHAR_UUID,
     START_CHAR_UUID,
 )
@@ -27,9 +26,11 @@ from .protocol import (
     ProbeStatus,
     WifiStatus,
     build_handshake,
+    build_hello,
     build_set_target_temp,
     build_set_timer,
     is_handshake_accepted,
+    mac_to_bytes,
     parse_handshake_challenge,
     parse_packet,
 )
@@ -52,6 +53,10 @@ _NOTIFY_TIMEOUT = 30.0
 # "packet B4". It is off by default because on a grill that already streams
 # readings the extra handshake is unnecessary.
 HANDSHAKE_ON_CONNECT = True
+
+# Seconds to wait after the hello before reading the challenge from fff2. The
+# grill computes it asynchronously; the official app waits about a second.
+_HANDSHAKE_CHALLENGE_DELAY = 1.2
 
 
 class MasterbuiltGrill:
@@ -124,10 +129,13 @@ class MasterbuiltGrill:
                 max_attempts=3,
             )
             self._handshake_done = False
-            step = "sending init payload"
+            step = "sending hello"
             try:
+                # The hello's nonce is derived from the grill's MAC; the
+                # controller validates it and starts the readings session.
+                hello = build_hello(mac_to_bytes(self.address))
                 _LOGGER.debug("%s: connected, %s", self.address, step)
-                await self._write(client, START_CHAR_UUID, INIT_PAYLOAD)
+                await self._write(client, START_CHAR_UUID, hello)
                 step = "subscribing to notifications"
                 _LOGGER.debug("%s: %s", self.address, step)
                 await self._start_notify(client)
@@ -314,14 +322,18 @@ class MasterbuiltGrill:
     async def _complete_handshake(self, client: BleakClient) -> None:
         """Finish the handshake the official app does, before sending commands.
 
-        connect() only writes the hello (INIT_PAYLOAD), which is enough for
-        the status stream. The app then reads a challenge from fff2, writes
+        connect() only writes the hello, which is enough for the status
+        stream. The app then reads a challenge from fff2, writes
         it back to fff1, and reads 0B 00 00. Whether commands need this is
         not known yet, so failures are logged and the command is sent anyway.
         Done once per connection, only when a command is sent, so a plain
         read-only connection stays exactly as before.
         """
         try:
+            # The grill needs time to compute the challenge before it appears
+            # on fff2; the official app waits about a second before reading.
+            # Reading immediately returns an empty value.
+            await asyncio.sleep(_HANDSHAKE_CHALLENGE_DELAY)
             reply = bytes(await client.read_gatt_char(AUTH_CHAR_UUID))
             _LOGGER.debug("%s: handshake reply %s", self.address, reply.hex(" ").upper())
             challenge = parse_handshake_challenge(reply)
