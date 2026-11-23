@@ -37,6 +37,10 @@ Assistant.
 
 In Home Assistant **2026.11** or newer, Marketplace replaces HACS.
 
+[![Open your Home Assistant instance and open a repository in the Marketplace.](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=joeknoll&repository=masterbuilt-ble&category=integration)
+
+Click the button above, or add it by hand:
+
 1. In Home Assistant, open **Marketplace**.
 2. Click **Add from link** in the upper-right corner.
 3. Paste `https://github.com/joeknoll/masterbuilt-ble` and add it.
@@ -214,9 +218,14 @@ python -m pytest tests/
 
 ### Releasing (maintainers)
 
-Create a GitHub release with a tag like `v0.2.0`. The release workflow
-writes that version into `manifest.json` and attaches `masterbuilt_ble.zip`,
-which Marketplace and HACS install.
+1. Set `version` in `custom_components/masterbuilt_ble/manifest.json` to the
+   new version (for example `0.2.0`) and commit it.
+2. Create a GitHub release with the matching tag (`v0.2.0`). A tag alone is
+   not enough: Marketplace and HACS read the latest published release.
+
+The release workflow fails if the tag and the manifest version differ.
+Otherwise it attaches `masterbuilt_ble.zip` to the release, which Marketplace
+and HACS install.
 
 ## Packet Information
 

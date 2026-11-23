@@ -1,10 +1,15 @@
-# Publishes a versioned build for HACS / Marketplace.
+# Publishes a versioned build for the Marketplace / HACS.
 #
-# To release: create a GitHub release with a tag like v0.2.0. This workflow
-# writes that version (without the "v") into manifest.json, zips the
-# integration and attaches masterbuilt_ble.zip to the release. hacs.json has
-# zip_release enabled, so HACS installs that zip and shows the release tag as
-# the installed version.
+# To release:
+#   1. Set "version" in custom_components/masterbuilt_ble/manifest.json to the
+#      new version (for example 0.2.0) and commit it.
+#   2. Create a GitHub release with the matching tag (v0.2.0). A tag alone is
+#      not enough; the Marketplace reads the latest published release.
+#
+# This workflow checks that the manifest version matches the tag (the
+# Marketplace requires them to match), zips the integration and attaches
+# masterbuilt_ble.zip to the release. hacs.json has zip_release enabled, so
+# that zip is what gets installed.
 name: Release
 
 on:
@@ -20,15 +25,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set the version in manifest.json
+      - name: Check the manifest version matches the tag
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
-          version="${TAG#v}"
-          jq --arg v "$version" '.version = $v' \
-            custom_components/masterbuilt_ble/manifest.json > manifest.tmp
-          mv manifest.tmp custom_components/masterbuilt_ble/manifest.json
-          cat custom_components/masterbuilt_ble/manifest.json
+          tag_version="${TAG#v}"
+          manifest_version="$(jq -r .version custom_components/masterbuilt_ble/manifest.json)"
+          if [ "$tag_version" != "$manifest_version" ]; then
+            echo "::error::manifest.json version ($manifest_version) does not match the release tag ($TAG). Update manifest.json, commit, and re-create the release."
+            exit 1
+          fi
 
       - name: Zip the integration
         run: |
