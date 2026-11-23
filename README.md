@@ -100,9 +100,6 @@ Some entities are **disabled by default**. You can turn them on from the
 device page if you want them:
 
 - **Probe 5–8.** For controllers that support more than four probes.
-- **Minimum / maximum settable temperature.**
-- **Raw status packet, raw probe packet.** Diagnostic
-  entities for people helping to decode the protocol.
 
 ## Controlling the grill (work in progress)
 

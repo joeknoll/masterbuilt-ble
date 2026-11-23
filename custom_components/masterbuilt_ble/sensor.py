@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTime
+from homeassistant.const import PERCENTAGE, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
@@ -68,46 +68,12 @@ SENSORS: tuple[MasterbuiltSensorEntityDescription, ...] = (
         value_fn=_status(lambda s: s.set_minutes),
     ),
     MasterbuiltSensorEntityDescription(
-        key="max_temperature",
-        translation_key="max_temperature",
-        device_class=SensorDeviceClass.TEMPERATURE,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        is_temperature=True,
-        value_fn=_status(lambda s: s.max_temp),
-    ),
-    MasterbuiltSensorEntityDescription(
-        key="min_temperature",
-        translation_key="min_temperature",
-        device_class=SensorDeviceClass.TEMPERATURE,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        is_temperature=True,
-        value_fn=_status(lambda s: s.min_temp),
-    ),
-    MasterbuiltSensorEntityDescription(
         key="fan_intensity",
         translation_key="fan_intensity",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:fan",
         value_fn=_status(lambda s: s.fan_intensity),
-    ),
-    # Raw values to help with further reverse engineering.
-    MasterbuiltSensorEntityDescription(
-        key="raw_status",
-        translation_key="raw_status",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=_status(lambda s: s.raw.hex(" ").upper()),
-    ),
-    MasterbuiltSensorEntityDescription(
-        key="raw_probes",
-        translation_key="raw_probes",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        needs_probes=True,
-        value_fn=lambda g: g.probes.raw.hex(" ").upper() if g.probes else None,
     ),
 ) + tuple(
     MasterbuiltSensorEntityDescription(
