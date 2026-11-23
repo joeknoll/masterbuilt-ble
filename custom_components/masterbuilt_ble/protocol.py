@@ -4,12 +4,12 @@ This module has no Home Assistant or Bleak dependencies so it can be unit
 tested on its own.
 
 Everything below was reverse engineered from Bluetooth captures of a Gravity
-Series-style controller and from the controller's own firmware, plus the
+Series-style controller, plus the
 GATT layout published in particle-iot/ble-gateway-library
 (masterbuilt-smoker.cpp) and other implementations of the same protocol.
 Each field is tagged:
 
-    [known]       confirmed by the controller's firmware or every capture
+    [known]       confirmed by capture
     [assumed]     consistent with captures, but only partly observed
     [unconfirmed] taken from another source and not yet seen to work here
     [unknown]     meaning not worked out yet
@@ -95,7 +95,7 @@ transfer through fff5 (same bits as B5 byte 2):
     A5 08 00   read the saved network name                        [unconfirmed]
     A5 04 04   about to send cloud credentials                    [unconfirmed]
 
-There is no known command that clears the saved network.
+There is no known command that directly clears the saved network.
 
 The grill answers each with a B5 packet. While the grill is on Wi-Fi it
 sends B5 packets (about every 2 s) instead of B4/B3 readings.
@@ -216,12 +216,37 @@ Control commands (write to ...fff3)
 The command format depends on the controller type:
 
     A1 ...   older smokers (the Particle library's command)
-    A2 00 00 status request, sent periodically to the oldest controllers
-    A3 ...   meat probe target temperature (format not documented here)
-    A4 ...   controllers that send the B4 status packet (this grill)
+    A2 00 00 status request for the oldest controllers (below)
+    A3 ...   meat probe target temperatures (below)
+    A4 ...   controllers that send the B4 status packet
     A5 ...   Wi-Fi setup (above)
 
-A4 command (10 bytes)                                          [unconfirmed]
+A2 command (3 bytes)                                [experimental, untested]
+
+    A2 00 00
+
+The status request. The official app (Classic) writes it every 1.5 s, but
+only to controllers it identifies as MCU version 1, which presumably send a
+status packet only when asked. It is the app's only A2 command; the newer
+app never sends it.
+
+A3 command (10 bytes)              [untested]
+
+    00     0xA3
+    01     which probe targets to set: bit0 = probe 1 ... bit3 = probe 4
+    02-03  probe 1 target temperature, int16
+    04-05  probe 2 target temperature, int16
+    06-07  probe 3 target temperature, int16
+    08-09  probe 4 target temperature, int16
+
+Temperatures use the grill's current scale. The controller only changes the
+probes whose bit is set; the app sets one probe per command and leaves the
+other bytes 0. The controller accepts only a 10-byte A3, so it can set
+probes 1-4 only.
+
+    A3 01 A0 00 00 00 00 00 00 00   set the probe 1 target to 160 °F
+
+A4 command (10 bytes)              [untested]
 
     00     0xA4
     01     what is being set
@@ -307,6 +332,14 @@ WIFI_ERRORS: dict[int, str] = {
 
 # Control command header: A1 07 05 <minutes u16 LE> <temp u16 LE> (older smokers)
 SET_TEMP_TIME_HEADER = bytes([0xA1, 0x07, 0x05])
+
+# A2 status request (oldest controllers; experimental).
+STATUS_REQUEST = bytes([0xA2, 0x00, 0x00])
+
+# A3 meat probe target command (experimental).
+PROBE_TARGET_COMMAND_ID = 0xA3
+PROBE_TARGET_COMMAND_LEN = 10
+PROBE_TARGET_MAX_PROBES = 4
 
 # A4 control command (controllers that send B4 status packets).
 CONTROL_COMMAND_ID = 0xA4
@@ -579,6 +612,32 @@ def build_set_timer(
     return bytes(cmd)
 
 
+def build_status_request() -> bytes:
+    """Build the (experimental) A2 status request: A2 00 00.
+
+    The official app polls the oldest controllers with this; a Gravity Series
+    controller ignores it.
+    """
+    return STATUS_REQUEST
+
+
+def build_set_probe_target(probe: int, temp: int) -> bytes:
+    """Build the (experimental) A3 command that sets one meat probe's target.
+
+    probe is 1-4; temp uses the grill's configured scale.
+    """
+    if not 1 <= probe <= PROBE_TARGET_MAX_PROBES:
+        raise ValueError(f"probe must be 1-{PROBE_TARGET_MAX_PROBES}, got {probe}")
+    if not -0x8000 <= temp <= 0x7FFF:
+        raise ValueError(f"temperature out of range: {temp}")
+    cmd = bytearray(PROBE_TARGET_COMMAND_LEN)
+    cmd[0] = PROBE_TARGET_COMMAND_ID
+    cmd[1] = 1 << (probe - 1)
+    offset = 2 + (probe - 1) * 2
+    cmd[offset : offset + 2] = temp.to_bytes(2, "little", signed=True)
+    return bytes(cmd)
+
+
 def build_handshake(nonce: bytes) -> bytes:
     """Build a handshake message (0E 08 <8 bytes>) to write to fff1."""
     if len(nonce) != HANDSHAKE_NONCE_LEN:
@@ -590,7 +649,6 @@ def build_handshake(nonce: bytes) -> bytes:
 # eight nonce bytes must equal a MAC byte XOR a fixed code (the other three are
 # not checked). Deriving the nonce from the grill's MAC produces a hello the
 # controller accepts, which starts the readings session and enables B4/B3.
-# Confirmed against the controller firmware and a capture of the official app.
 #   nonce index -> (MAC index, XOR code)
 HELLO_NONCE_MAC_MAP: dict[int, tuple[int, int]] = {
     2: (0, 0xB2),

@@ -27,8 +27,10 @@ from .protocol import (
     WifiStatus,
     build_handshake,
     build_hello,
+    build_set_probe_target,
     build_set_target_temp,
     build_set_timer,
+    build_status_request,
     is_handshake_accepted,
     mac_to_bytes,
     parse_handshake_challenge,
@@ -287,6 +289,25 @@ class MasterbuiltGrill:
                 minutes, fahrenheit=status.fahrenheit, powered_on=status.powered_on
             ),
         )
+
+    async def set_probe_target(self, probe: int, temp: int) -> None:
+        """Set a meat probe's target temperature (A3 command, probes 1-4).
+
+        Experimental: the format is confirmed in the controller firmware but
+        untested on real hardware. temp uses the grill's current scale.
+        """
+        self._require_status()
+        await self._send_command(
+            f"set probe {probe} target", build_set_probe_target(probe, temp)
+        )
+
+    async def request_status(self) -> None:
+        """Send the A2 status request. Experimental.
+
+        The official app polls only the oldest controllers with this; a
+        Gravity Series controller ignores it and streams status on its own.
+        """
+        await self._send_command("status request", build_status_request())
 
     def _require_status(self) -> GrillStatus:
         # Commands carry the grill's unit and power state; sending a guess

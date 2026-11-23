@@ -1,0 +1,41 @@
+# Publishes a versioned build for HACS / Marketplace.
+#
+# To release: create a GitHub release with a tag like v0.2.0. This workflow
+# writes that version (without the "v") into manifest.json, zips the
+# integration and attaches masterbuilt_ble.zip to the release. hacs.json has
+# zip_release enabled, so HACS installs that zip and shows the release tag as
+# the installed version.
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set the version in manifest.json
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${TAG#v}"
+          jq --arg v "$version" '.version = $v' \
+            custom_components/masterbuilt_ble/manifest.json > manifest.tmp
+          mv manifest.tmp custom_components/masterbuilt_ble/manifest.json
+          cat custom_components/masterbuilt_ble/manifest.json
+
+      - name: Zip the integration
+        run: |
+          cd custom_components/masterbuilt_ble
+          zip -r ../../masterbuilt_ble.zip . -x '__pycache__/*' '*.pyc'
+
+      - name: Attach the zip to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" masterbuilt_ble.zip --clobber

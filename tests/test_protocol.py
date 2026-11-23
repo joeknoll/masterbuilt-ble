@@ -188,6 +188,27 @@ def test_set_timer_command():
     assert cmd.hex(" ").upper() == "A4 03 01 9D 01 00 00 00 00 00"
 
 
+def test_status_request_command():
+    assert protocol.build_status_request().hex(" ").upper() == "A2 00 00"
+
+
+def test_set_probe_target_command():
+    cmd = protocol.build_set_probe_target(1, 160)
+    assert cmd.hex(" ").upper() == "A3 01 A0 00 00 00 00 00 00 00"
+
+
+def test_set_probe_target_command_probe_4():
+    cmd = protocol.build_set_probe_target(4, 300)
+    assert cmd.hex(" ").upper() == "A3 08 00 00 00 00 00 00 2C 01"
+
+
+def test_set_probe_target_rejects_probe_5():
+    import pytest
+
+    with pytest.raises(ValueError):
+        protocol.build_set_probe_target(5, 160)
+
+
 def test_command_keeps_power_bit_clear_when_off():
     cmd = protocol.build_set_timer(10, fahrenheit=True, powered_on=False)
     assert cmd[2] == 0

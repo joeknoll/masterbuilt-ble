@@ -33,7 +33,17 @@ Assistant.
 
 ## Installation
 
-### Option 1: HACS (recommended)
+### Option 1: Marketplace (recommended)
+
+In Home Assistant **2026.11** or newer, Marketplace replaces HACS.
+
+1. In Home Assistant, open **Marketplace**.
+2. Click **Add from link** in the upper-right corner.
+3. Paste `https://github.com/joeknoll/masterbuilt-ble` and add it.
+4. Open **Masterbuilt Grill** and click **Download**.
+5. Restart Home Assistant.
+
+### Option 2: HACS (older Home Assistant versions)
 
 1. In Home Assistant, open **HACS**.
 2. Open the menu (⋮) in the top-right corner and choose **Custom repositories**.
@@ -41,7 +51,11 @@ Assistant.
 4. Search for **Masterbuilt Grill**, open it, and click **Download**.
 5. Restart Home Assistant.
 
-### Option 2: Manual
+Marketplace and HACS both install the latest
+[release](https://github.com/joeknoll/masterbuilt-ble/releases) and show its
+version number.
+
+### Option 3: Manual
 
 1. Download this repository.
 2. Copy the `custom_components/masterbuilt_ble` folder into your Home Assistant
@@ -107,6 +121,15 @@ has been tested on a grill that is sending readings over Bluetooth. The
 command carries the grill's current units and power state, so it can only
 be sent once a status packet has arrived.
 
+Two more commands are implemented as experimental, with no entities yet:
+
+- **`A3`, meat probe targets.** Sets the target temperature of probe 1–4.
+  The format is confirmed in the controller firmware but hasn't been tested
+  on a grill.
+- **`A2`, status request (`A2 00 00`).** The official app sends this only to
+  the oldest controllers. A Gravity Series grill ignores it and sends status
+  on its own.
+
 If you have a grill where control works, or a packet capture of it, please
 [open an issue](https://github.com/joeknoll/masterbuilt-ble/issues).
 
@@ -149,33 +172,6 @@ readings. Check your grill's manual or ask Masterbuilt support how to do this
 for your controller. Making the saved network unreachable, for example by
 blocking the grill on your router, is not enough.
 
-The Wi-Fi status packet is 5 bytes:
-
-| Byte | Contents |
-|---|---|
-| 0 | `B5`, the packet type |
-| 1 | Connection state (bitmap below) |
-| 2 | Data transfer state during Wi-Fi setup (bitmap below) |
-| 3 | Setup errors (bitmap below) |
-| 4 | Number of Wi-Fi networks found in the last scan |
-
-Each bit in bytes 1–3 is a separate flag:
-
-| Bit | Value | Byte 1: connection state | Byte 2: data transfer | Byte 3: errors |
-|---|---|---|---|---|
-| 0 | `01` | Scanning for networks | Ready to receive data | Network not found |
-| 1 | `02` | Connected to Wi-Fi | Received data | Wrong Wi-Fi password |
-| 2 | `04` | Connected to the internet | Ready to send data | No Wi-Fi networks in range |
-| 3 | `08` | Connected to the cloud service | Sent data | Network has no internet access |
-| 4 | `10` | Synced with its cloud state | Finished sending data | Can't reach the cloud service |
-| 5 | `20` | About to report its firmware version | — | Can't sync with the cloud |
-| 6 | `40` | Network list ready to send | — | Firmware update failed |
-| 7 | `80` | Busy connecting or updating | — | — |
-
-Add the values together to read a byte. For example, byte 1 = `1E` is
-`02 + 04 + 08 + 10`: connected to Wi-Fi, the internet and the cloud, and
-synced. `00` means not connected.
-
 ### Turn on debug logging
 
 Add this to `configuration.yaml` and restart:
@@ -201,8 +197,25 @@ is very helpful.
 Bug reports, packet captures from other grill models, and pull requests are
 welcome.
 
-### Help decode the protocol
+### Running the tests
 
+The packet parser doesn't depend on Home Assistant, so the tests run with
+plain `pytest` on Python 3.12 or newer:
+
+```sh
+pip install pytest
+python -m pytest tests/
+```
+
+### Releasing (maintainers)
+
+Create a GitHub release with a tag like `v0.2.0`. The release workflow
+writes that version into `manifest.json` and attaches `masterbuilt_ble.zip`,
+which Marketplace and HACS install.
+
+## Packet Information
+
+### Status Packet
 The full packet layout is documented in
 [`protocol.py`](custom_components/masterbuilt_ble/protocol.py), with each
 field marked as confirmed or not. The status packet (`B4`, 21 bytes) looks
@@ -224,46 +237,50 @@ like this:
 | 17–18 | Maximum settable temperature |
 | 19–20 | Minimum settable temperature |
 
-| Bit | Value | Byte 1: configuration | Byte 2: operation |
-|---|---|---|---|
-| 0 | `01` | °F (clear = °C) | Powered on |
-| 1 | `02` | Timer on | Bluetooth control enabled |
-| 2 | `04` | Timer counts up | Door or lid open |
-| 3 | `08` | Min/max temperatures present | Count-up timer running |
-| 4 | `10` | Has a smoker element | Smoker element on |
-| 5 | `20` | Has a fan (charcoal) | Fan on (heating) |
-| 6 | `40` | Has a broiler | Broiler on |
-| 7 | `80` | Has smoke on demand | Smoke on demand on |
+| Bit | Byte 1: configuration | Byte 2: operation |
+|---|---|---|
+| 0 | °F (clear = °C) | Powered on |
+| 1 | Timer on | Bluetooth control enabled |
+| 2 | Timer counts up | Door or lid open |
+| 3 | Min/max temperatures present | Count-up timer running |
+| 4 | Has a smoker element | Smoker element on |
+| 5 | Has a fan (charcoal) | Fan on (heating) |
+| 6 | Has a broiler | Broiler on |
+| 7 | Has smoke on demand | Smoke on demand on |
 
 Numbers are little-endian. A Gravity Series grill always reports
 configuration bits 3 and 5, never configuration bits 4, 6 or 7, and never
 operation bits 2, 4, 6 or 7, so it doesn't report the lid state. It sends 0
-in bytes 6–7 and 10, and sends temperatures as whole numbers: it keeps them
-in °F and, when set to °C, sends (°F − 32) × 5 / 9 rounded toward zero.
+in bytes 6–7 and 10, and sends temperatures as whole numbers.
 Err 2 (meat probe malfunction) is set when any probe reports a fault.
 
-Open questions:
+### Wi-Fi Status Packet
 
-- The smoker element, broiler and smoke-on-demand fields haven't been seen
-  in a capture; captures from grills that have them would confirm them.
-- What operation bit 1 means, and whether operation bit 0 is the power
-  state. Captures with the grill switched off or a count-up timer would
-  help.
-- Only Err 4 has been seen in a capture. Captures of other errors would
-  confirm them.
+The Wi-Fi status packet is 5 bytes:
 
-To help, enable the raw packet sensors or debug logging, change one thing on
-the grill at a time, and note which bytes change.
+| Byte | Contents |
+|---|---|
+| 0 | `B5`, the packet type |
+| 1 | Connection state (bitmap below) |
+| 2 | Data transfer state during Wi-Fi setup (bitmap below) |
+| 3 | Setup errors (bitmap below) |
+| 4 | Number of Wi-Fi networks found in the last scan |
 
-### Running the tests
+Each bit in bytes 1–3 is a separate flag:
 
-The packet parser doesn't depend on Home Assistant, so the tests run with
-plain `pytest` on Python 3.12 or newer:
+| Bit | Byte 1: connection state | Byte 2: data transfer | Byte 3: errors |
+|---|---|---|---|
+| 0 | Scanning for networks | Ready to receive data | Network not found |
+| 1 | Connected to Wi-Fi | Received data | Wrong Wi-Fi password |
+| 2 | Connected to the internet | Ready to send data | No Wi-Fi networks in range |
+| 3 | Connected to the cloud service | Sent data | Network has no internet access |
+| 4 | Synced with its cloud state | Finished sending data | Can't reach the cloud service |
+| 5 | About to report its firmware version | — | Can't sync with the cloud |
+| 6 | Network list ready to send | — | Firmware update failed |
+| 7 | Busy connecting or updating | — | — |
 
-```sh
-pip install pytest
-python -m pytest tests/
-```
+For example, byte 1 = `1E` is connected to Wi-Fi, the internet and the cloud, and
+synced. `00` means not connected.
 
 ## Credits
 
