@@ -188,6 +188,16 @@ def test_set_timer_command():
     assert cmd.hex(" ").upper() == "A4 03 01 9D 01 00 00 00 00 00"
 
 
+def test_power_off_command():
+    cmd = protocol.build_power_off(fahrenheit=True)
+    assert cmd.hex(" ").upper() == "A4 01 00 00 00 00 00 00 00 00"
+
+
+def test_power_off_command_celsius():
+    cmd = protocol.build_power_off(fahrenheit=False)
+    assert cmd.hex(" ").upper() == "A4 00 00 00 00 00 00 00 00 00"
+
+
 def test_status_request_command():
     assert protocol.build_status_request().hex(" ").upper() == "A2 00 00"
 
@@ -217,3 +227,5 @@ def test_command_keeps_power_bit_clear_when_off():
 def test_powered_on_flag():
     assert status("B4292300A2010000A40100000000000000BC029600").powered_on
     assert not status("B429020048000000E10000000000000000BC029600").powered_on
+    # Captured right after sending the A4 power-off command.
+    assert not status("B42900002E000000000000000000000000BC029600").powered_on

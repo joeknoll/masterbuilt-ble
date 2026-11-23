@@ -11,7 +11,7 @@ from .device import MasterbuiltGrill
 
 # The number platform (set temperature / timer) is not loaded: the command
 # hasn't been confirmed to work. number.py is kept for when it is.
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SENSOR]
 
 type MasterbuiltConfigEntry = ConfigEntry[MasterbuiltCoordinator]
 

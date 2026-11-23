@@ -27,6 +27,7 @@ from .protocol import (
     WifiStatus,
     build_handshake,
     build_hello,
+    build_power_off,
     build_set_probe_target,
     build_set_target_temp,
     build_set_timer,
@@ -289,6 +290,11 @@ class MasterbuiltGrill:
                 minutes, fahrenheit=status.fahrenheit, powered_on=status.powered_on
             ),
         )
+
+    async def power_off(self) -> None:
+        """Turn the grill off (A4 command with the power bit clear). Tested on a grill."""
+        status = self._require_status()
+        await self._send_command("power off", build_power_off(fahrenheit=status.fahrenheit))
 
     async def set_probe_target(self, probe: int, temp: int) -> None:
         """Set a meat probe's target temperature (A3 command, probes 1-4).

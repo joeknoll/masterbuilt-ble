@@ -157,7 +157,7 @@ Status packet (0xB4, 21 bytes)
            A Gravity Series grill always reports bits 3 and 5 set and
            bits 4, 6 and 7 clear. [known]
     02     operation bitmap
-             bit0  powered on                                 [assumed]
+             bit0  powered on                                 [known]
              bit1  Bluetooth control enabled                  [unconfirmed]
              bit2  door / lid open                            [unconfirmed]
              bit3  count-up timer running                     [assumed]
@@ -270,6 +270,7 @@ One setting is sent per command. Examples, grill on and in °F:
 
     A4 11 01 00 00 00 00 FA 00 00   set the target to 250 °F
     A4 03 01 9D 01 00 00 00 00 00   set the timer to 413 minutes
+    A4 01 00 00 00 00 00 00 00 00   turn the grill off (tested)
 
 A1 command (older smokers)                                     [unconfirmed]
 
@@ -610,6 +611,16 @@ def build_set_timer(
     cmd = _control_command(CONTROL_SET_TIMER, fahrenheit, powered_on, control)
     cmd[3:5] = minutes.to_bytes(2, "little")
     return bytes(cmd)
+
+
+def build_power_off(*, fahrenheit: bool) -> bytes:
+    """Build the A4 command that turns the grill off (tested on a grill).
+
+    An A4 with the power bit (byte 2, bit 0) clear and nothing else set; the
+    controller switches off and clears the timer and fan when it
+    sees it. fahrenheit must match the grill's current unit.
+    """
+    return bytes(_control_command(0, fahrenheit, powered_on=False))
 
 
 def build_status_request() -> bytes:

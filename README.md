@@ -118,6 +118,14 @@ has been tested on a grill that is sending readings over Bluetooth. The
 command carries the grill's current units and power state, so it can only
 be sent once a status packet has arrived.
 
+**Power off.** A **Power off** button turns the grill off.
+It sends the `A4` command with the power bit clear (`A4 01 00 …` in °F).
+This has been tested on a grill: afterwards the status packet reports the
+power bit (operation bit 0) clear. The button is disabled by default; turn it
+on from the device page. It is unavailable while the grill is off.
+There is no power-on button: switching a charcoal grill on remotely with no
+ignition source doesn't make sense.
+
 Two more commands are implemented as experimental, with no entities yet:
 
 - **`A3`, meat probe targets.** Sets the target temperature of probe 1–4.

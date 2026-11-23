@@ -41,6 +41,9 @@
       "error_4": { "name": "Err 4: charcoal failed to ignite" },
       "error_5": { "name": "Err 5: meat probe above 300°F" }
     },
+    "button": {
+      "power_off": { "name": "Power off" }
+    },
     "number": {
       "set_target_temperature": { "name": "Set target temperature (experimental)" },
       "set_timer": { "name": "Set timer (experimental)" }
